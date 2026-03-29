@@ -304,10 +304,7 @@ async fn bus_loop(
 
             debug!(chat_id = chat_id, "forwarding bus message to Telegram");
             if outbound_tx
-                .send(OutboundCmd::Text {
-                    chat_id,
-                    text,
-                })
+                .send(OutboundCmd::Text { chat_id, text })
                 .is_err()
             {
                 warn!("telegram adapter: outbound channel closed");

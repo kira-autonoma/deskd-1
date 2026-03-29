@@ -393,6 +393,7 @@ dependencies = [
  "chrono",
  "clap",
  "cron",
+ "futures",
  "openssl",
  "serde",
  "serde_json",

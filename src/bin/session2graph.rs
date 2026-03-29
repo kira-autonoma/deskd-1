@@ -611,7 +611,11 @@ mod tests {
         assert_eq!(graph.components[5].entity, "tool_use");
 
         // Check titles
-        assert!(graph.components[0].title.starts_with("user: fix the login bug"));
+        assert!(
+            graph.components[0]
+                .title
+                .starts_with("user: fix the login bug")
+        );
         assert!(graph.components[2].title.contains("Read"));
         assert!(graph.components[3].title.contains("chars]"));
         assert!(graph.components[5].title.contains("Edit"));
