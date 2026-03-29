@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
@@ -499,10 +499,7 @@ async fn exec_tool(
     let result = match tool.tool.as_str() {
         "bash" => exec_bash(&expanded_args, work_dir).await,
         "write_file" => {
-            let path = tool
-                .path
-                .as_deref()
-                .unwrap_or(&expanded_args);
+            let path = tool.path.as_deref().unwrap_or(&expanded_args);
             let path = ctx.expand_template(path);
 
             // If template is specified, load and expand it.
@@ -534,13 +531,7 @@ async fn exec_tool(
             let path = ctx.expand_template(path);
             exec_read_file(&path, work_dir).await
         }
-        other => {
-            Ok((
-                String::new(),
-                format!("unknown tool: {}", other),
-                127,
-            ))
-        }
+        other => Ok((String::new(), format!("unknown tool: {}", other), 127)),
     };
 
     match result {
@@ -605,11 +596,8 @@ pub async fn execute(
     on_progress: Option<&ProgressFn>,
 ) -> Result<ExecContext> {
     let order = topo_sort(graph)?;
-    let step_map: HashMap<&str, &StepDef> = graph
-        .steps
-        .iter()
-        .map(|s| (s.id.as_str(), s))
-        .collect();
+    let step_map: HashMap<&str, &StepDef> =
+        graph.steps.iter().map(|s| (s.id.as_str(), s)).collect();
 
     let templates_dir = graph.templates_dir.as_ref().map(|d| work_dir.join(d));
     let templates_path = templates_dir.as_deref();
@@ -753,10 +741,10 @@ pub async fn execute(
 
 /// Load a graph definition from a YAML file.
 pub fn load(path: &Path) -> Result<GraphDef> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("reading graph: {}", path.display()))?;
-    let graph: GraphDef =
-        serde_yaml::from_str(&content).with_context(|| format!("parsing graph: {}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading graph: {}", path.display()))?;
+    let graph: GraphDef = serde_yaml::from_str(&content)
+        .with_context(|| format!("parsing graph: {}", path.display()))?;
 
     // Validate.
     topo_sort(&graph)?;
@@ -876,8 +864,7 @@ steps:
         let mut ctx = ExecContext::default();
         ctx.variables
             .insert("needs_gh_auth".to_string(), "true".to_string());
-        ctx.variables
-            .insert("empty_var".to_string(), String::new());
+        ctx.variables.insert("empty_var".to_string(), String::new());
 
         assert!(ctx.eval_condition("needs_gh_auth"));
         assert!(!ctx.eval_condition("!needs_gh_auth"));
@@ -996,14 +983,8 @@ steps:
         assert_eq!(ctx.results.len(), 2);
         assert!(!ctx.results["greet"].skipped);
         assert!(!ctx.results["shout"].skipped);
-        assert_eq!(
-            ctx.results["greet"].tool_results[0].stdout.trim(),
-            "hello"
-        );
-        assert_eq!(
-            ctx.results["shout"].tool_results[0].stdout.trim(),
-            "WORLD"
-        );
+        assert_eq!(ctx.results["greet"].tool_results[0].stdout.trim(), "hello");
+        assert_eq!(ctx.results["shout"].tool_results[0].stdout.trim(), "WORLD");
     }
 
     #[tokio::test]
@@ -1062,9 +1043,8 @@ steps:
         let dir = std::env::temp_dir().join("graph_test_wr");
         let _ = std::fs::create_dir_all(&dir);
 
-        let graph: GraphDef = serde_yaml::from_str(
-            &format!(
-                r#"
+        let graph: GraphDef = serde_yaml::from_str(&format!(
+            r#"
 graph: file-ops
 steps:
   - id: write
@@ -1075,10 +1055,9 @@ steps:
     tools:
       - {{ tool: "read_file", path: "{}/test_graph_output.txt" }}
 "#,
-                dir.display(),
-                dir.display()
-            ),
-        )
+            dir.display(),
+            dir.display()
+        ))
         .unwrap();
 
         let ctx = execute(&graph, &dir, None).await.unwrap();
