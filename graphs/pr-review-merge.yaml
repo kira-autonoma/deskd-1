@@ -56,7 +56,18 @@ steps:
     condition: "'merge' in action"
     tools:
       - tool: bash
-        args: "cd {work_dir} && git checkout -b _pr_{pr_number} kira/{branch} 2>&1 && git rebase main 2>&1"
+        args: |
+          cd {work_dir} && \
+          if git rev-parse --verify origin/{branch} >/dev/null 2>&1; then \
+            REMOTE=origin; \
+          elif git rev-parse --verify kira/{branch} >/dev/null 2>&1; then \
+            REMOTE=kira; \
+          else \
+            echo "FATAL: branch {branch} not found on origin or kira (post-fetch)" >&2; exit 1; \
+          fi && \
+          echo "PR branch resolved to: $REMOTE/{branch}" && \
+          git checkout -b _pr_{pr_number} $REMOTE/{branch} 2>&1 && \
+          git rebase main 2>&1
 
   - id: quality_check
     depends_on: [rebase_branch]
@@ -75,46 +86,37 @@ steps:
       - tool: bash
         args: "cd {work_dir} && ~/.cargo/bin/cargo fmt 2>&1"
 
-  - id: squash_merge
+  # Single atomic step: merge → close PR → tag release.
+  # Chained with `set -euo pipefail` so any failure (e.g. push rejection,
+  # remote misconfiguration) aborts BEFORE the PR is closed or the tag is
+  # pushed. The graph engine's condition language can't gate on a prior
+  # step's exit code, so collapsing avoids the false-positive "merged"
+  # signal that #475 (and the #460 incident) reported.
+  - id: merge_close_tag
     depends_on: [fix_fmt]
     condition: "'merge' in action"
     tools:
       - tool: bash
-        args: >
-          cd {work_dir} &&
-          git checkout main &&
-          git merge --squash _pr_{pr_number} &&
-          git commit -m "{title} (#{pr_number})" &&
-          git push origin main 2>&1
-
-  - id: cleanup_branch
-    depends_on: [squash_merge]
-    condition: "'merge' in action"
-    tools:
-      - tool: bash
-        args: "cd {work_dir} && git branch -D _pr_{pr_number} 2>&1"
-
-  - id: close_pr
-    depends_on: [squash_merge]
-    condition: "'merge' in action"
-    tools:
-      - tool: bash
-        args: "gh pr close {pr_number} --repo {repo} --comment 'Merged to main via skill graph.' 2>&1"
-
-  - id: tag_release
-    depends_on: [squash_merge]
-    condition: "'merge' in action"
-    tools:
-      - tool: bash
-        args: >
-          cd {work_dir} &&
-          LATEST=$(git tag -l 'v*' | sort -V | tail -1) &&
-          MAJOR=$(echo $LATEST | cut -d. -f1) &&
-          MINOR=$(echo $LATEST | cut -d. -f2) &&
-          PATCH=$(echo $LATEST | cut -d. -f3) &&
-          NEXT="$MAJOR.$MINOR.$((PATCH+1))" &&
-          git tag $NEXT &&
-          git push origin $NEXT 2>&1 &&
+        args: |
+          set -euo pipefail
+          cd {work_dir}
+          # 1. Merge to origin/main. If this fails, nothing below runs.
+          git checkout main
+          git merge --squash _pr_{pr_number}
+          git commit -m "{title} (#{pr_number})"
+          git push origin main
+          # 2. Merge succeeded — safe to close the PR.
+          gh pr close {pr_number} --repo {repo} --comment 'Merged to main via skill graph.'
+          # 3. Local cleanup (non-fatal but useful).
+          git branch -D _pr_{pr_number}
+          # 4. Tag a patch release.
+          LATEST=$(git tag -l 'v*' | sort -V | tail -1)
+          MAJOR=$(echo $LATEST | cut -d. -f1)
+          MINOR=$(echo $LATEST | cut -d. -f2)
+          PATCH=$(echo $LATEST | cut -d. -f3)
+          NEXT="$MAJOR.$MINOR.$((PATCH+1))"
+          git tag $NEXT
+          git push origin $NEXT
           echo "tagged: $NEXT"
 
   - id: comment_issues
@@ -125,7 +127,7 @@ steps:
         args: "gh pr review {pr_number} --repo {repo} --comment --body '{issues}' 2>&1"
 
   - id: notify_telegram
-    depends_on: [tag_release, comment_issues]
+    depends_on: [merge_close_tag, comment_issues]
     type: llm
     prompt: |
       Based on the results, compose a brief Telegram notification (2-3 lines).
