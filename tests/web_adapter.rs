@@ -44,7 +44,7 @@ fn cfg(audit_path: std::path::PathBuf, rate_limit: u32) -> WebConfig {
     WebConfig {
         enabled: true,
         bind: "127.0.0.1:0".into(),
-        external_url: "https://deskd.example.com".into(),
+        external_url: Some("https://deskd.example.com".into()),
         session_ttl_days: 30,
         magic_link_ttl_seconds: 300,
         allowed_telegram_ids: vec![TEST_TG_ID],
@@ -52,6 +52,7 @@ fn cfg(audit_path: std::path::PathBuf, rate_limit: u32) -> WebConfig {
         rate_limit: WebRateLimitConfig {
             auth_requests_per_hour: rate_limit,
         },
+        trust_transport: false,
     }
 }
 
@@ -551,6 +552,100 @@ async fn full_login_round_trip() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
     assert!(body.contains("dashboard"));
+}
+
+// ─── trust_transport mode (Tailscale-internal deployments) ──────────────
+
+/// Build a WebState with `trust_transport: true` — auth is bypassed because
+/// the network layer (Tailscale/VPN) already authenticates the caller.
+fn build_state_trust_transport() -> (WebState, RecordingDispatcher, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let audit_path = dir.path().join("audit.jsonl");
+    let mut cfg_obj = cfg(audit_path.clone(), 20);
+    cfg_obj.trust_transport = true;
+    // `external_url` is unused in this mode — clear it to prove that.
+    cfg_obj.external_url = None;
+    cfg_obj.allowed_telegram_ids.clear();
+
+    let dispatcher = RecordingDispatcher::new();
+    let dispatcher_arc: Arc<dyn deskd::app::adapters::web::dispatch::TelegramDispatcher> =
+        Arc::new(dispatcher.clone());
+    let agent_commands: Arc<dyn deskd::app::adapters::web::dispatch::AgentCommandDispatcher> =
+        Arc::new(
+            deskd::app::adapters::web::dispatch::testing::RecordingAgentCommandDispatcher::new(),
+        );
+    let bus_sender: Arc<dyn deskd::app::adapters::web::dispatch::BusSender> =
+        Arc::new(RecordingBusSender::new());
+    let metrics_cache = dir.path().join("disk-cache.json");
+    let state = WebState {
+        cfg: Arc::new(cfg_obj),
+        secret: Arc::new(TEST_SECRET),
+        tokens: Arc::new(TokenStore::new()),
+        rate_limiter_ip: Arc::new(RateLimiter::new(20, 3600)),
+        rate_limiter_tg: Arc::new(RateLimiter::new(20, 3600)),
+        audit: AuditLog::new(audit_path),
+        telegram: dispatcher_arc,
+        github_webhooks: None,
+        bus: bus_sender,
+        github_deliveries: shared_dedupe(),
+        agent_commands,
+        now: Arc::new(|| 1_700_000_000),
+        metrics: deskd::app::metrics::DiskMetrics::new(metrics_cache),
+        agent_homes: Arc::new(Vec::new()),
+        metrics_bus: None,
+    };
+    (state, dispatcher, dir)
+}
+
+#[tokio::test]
+async fn trust_transport_dashboard_returns_200_without_cookie() {
+    // The whole point of trust_transport: no cookie → 200, not a redirect.
+    let (state, _disp, _dir) = build_state_trust_transport();
+    let app = router::build(state);
+    let req = req_with_peer(Request::get("/").body(Body::empty()).unwrap());
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "expected 200 with trust_transport, got {}",
+        resp.status()
+    );
+    let body = body_string(resp).await;
+    assert!(body.contains("dashboard"));
+}
+
+#[tokio::test]
+async fn trust_transport_off_still_redirects_unauthenticated() {
+    // Regression guard: the default config path must keep its existing
+    // 302→/login behaviour. Re-using the long-standing dashboard test would
+    // achieve the same thing, but pairing the two assertions here makes the
+    // contract obvious to anyone reading the test file.
+    let (state, _disp, _dir) = build_state(20);
+    let app = router::build(state);
+    let req = req_with_peer(Request::get("/").body(Body::empty()).unwrap());
+    let resp = app.oneshot(req).await.unwrap();
+    assert!(
+        resp.status().is_redirection(),
+        "expected redirect, got {}",
+        resp.status()
+    );
+    assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/login");
+}
+
+#[tokio::test]
+async fn trust_transport_login_request_returns_503() {
+    // With auth bypassed there's no magic-link flow, and `external_url` may
+    // be missing — POST /login/request must return 503, not panic on unwrap.
+    let (state, _disp, _dir) = build_state_trust_transport();
+    let app = router::build(state);
+    let req = req_with_peer(
+        Request::post("/login/request")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("_csrf=anything"))
+            .unwrap(),
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ─── enabled=false dispatch decision ─────────────────────────────────────

@@ -41,9 +41,8 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 
-use crate::app::adapters::web::auth::session;
 use crate::app::adapters::web::data::{self, AgentSummary};
-use crate::app::adapters::web::routes::read_session_cookie;
+use crate::app::adapters::web::routes::authenticate;
 use crate::app::adapters::web::state::WebState;
 use crate::app::adapters::web::view::{agent_card, agent_card_id, vps_strip};
 use crate::app::metrics::DiskMetrics;
@@ -114,13 +113,7 @@ pub async fn events(
     headers: HeaderMap,
     Query(q): Query<EventsQuery>,
 ) -> Response {
-    let now = (state.now)();
-    let cookie = read_session_cookie(&headers);
-    if cookie
-        .as_deref()
-        .and_then(|c| session::verify(c, state.secret.as_ref(), now))
-        .is_none()
-    {
+    if authenticate(&state, &headers).is_none() {
         return Redirect::to("/login").into_response();
     }
 

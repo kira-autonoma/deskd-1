@@ -44,7 +44,7 @@ fn cfg(audit_path: std::path::PathBuf) -> WebConfig {
     WebConfig {
         enabled: true,
         bind: "127.0.0.1:0".into(),
-        external_url: "https://deskd.example.com".into(),
+        external_url: Some("https://deskd.example.com".into()),
         session_ttl_days: 30,
         magic_link_ttl_seconds: 300,
         allowed_telegram_ids: vec![TEST_TG_ID],
@@ -52,6 +52,7 @@ fn cfg(audit_path: std::path::PathBuf) -> WebConfig {
         rate_limit: WebRateLimitConfig {
             auth_requests_per_hour: 20,
         },
+        trust_transport: false,
     }
 }
 

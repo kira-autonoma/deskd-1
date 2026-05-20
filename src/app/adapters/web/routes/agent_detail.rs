@@ -35,7 +35,7 @@ use crate::app::adapters::web::audit::{AuditEntry, Event};
 use crate::app::adapters::web::auth::session;
 use crate::app::adapters::web::data::{self, AgentDetail};
 use crate::app::adapters::web::dispatch::AgentCommand;
-use crate::app::adapters::web::routes::{client_ip, read_session_cookie, user_agent};
+use crate::app::adapters::web::routes::{authenticate, client_ip, csrf_ok_for, user_agent};
 use crate::app::adapters::web::state::WebState;
 use crate::app::adapters::web::view::{agent_disk_detail_html, format_bytes};
 use crate::app::adapters::web::{templates, view};
@@ -242,10 +242,7 @@ fn require_session(
     state: &WebState,
     headers: &HeaderMap,
 ) -> Result<session::SessionPayload, Response> {
-    let now = (state.now)();
-    let cookie = read_session_cookie(headers);
-    let session_payload = cookie.and_then(|c| session::verify(&c, state.secret.as_ref(), now));
-    match session_payload {
+    match authenticate(state, headers) {
         Some(p) => Ok(p),
         None => Err(Redirect::to("/login").into_response()),
     }
@@ -269,7 +266,7 @@ async fn handle_direct_action(
         Err(resp) => return resp,
     };
 
-    if !csrf_ok(&session_payload, &form) {
+    if !csrf_ok(&state, &session_payload, &form) {
         return (StatusCode::FORBIDDEN, "invalid csrf").into_response();
     }
 
@@ -355,7 +352,7 @@ fn render_confirm_page(
         Err(resp) => return resp,
     };
 
-    if !csrf_ok(&session_payload, &form) {
+    if !csrf_ok(&state, &session_payload, &form) {
         return (StatusCode::FORBIDDEN, "invalid csrf").into_response();
     }
 
@@ -370,8 +367,8 @@ fn render_confirm_page(
     html_response(StatusCode::OK, html)
 }
 
-fn csrf_ok(payload: &session::SessionPayload, form: &ActionForm) -> bool {
-    !form._csrf.is_empty() && form._csrf == payload.csrf
+fn csrf_ok(state: &WebState, payload: &session::SessionPayload, form: &ActionForm) -> bool {
+    csrf_ok_for(state, payload, &form._csrf)
 }
 
 #[allow(clippy::too_many_arguments)]

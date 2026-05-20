@@ -8,17 +8,14 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 
-use crate::app::adapters::web::auth::session;
 use crate::app::adapters::web::data;
-use crate::app::adapters::web::routes::{SESSION_COOKIE_NAME, read_session_cookie};
+use crate::app::adapters::web::routes::{SESSION_COOKIE_NAME, authenticate};
 use crate::app::adapters::web::state::WebState;
 use crate::app::adapters::web::templates;
 use crate::app::adapters::web::view;
 
 pub async fn dashboard(State(state): State<WebState>, headers: HeaderMap) -> Response {
-    let now = (state.now)();
-    let cookie = read_session_cookie(&headers);
-    let session_payload = cookie.and_then(|c| session::verify(&c, state.secret.as_ref(), now));
+    let session_payload = authenticate(&state, &headers);
 
     match session_payload {
         Some(p) => {

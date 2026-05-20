@@ -17,8 +17,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::app::adapters::web::auth::session;
-use crate::app::adapters::web::routes::read_session_cookie;
+use crate::app::adapters::web::routes::{authenticate, csrf_ok_for};
 use crate::app::adapters::web::state::WebState;
 use crate::app::metrics::{self, CollectorConfig, DiskSnapshot, RefreshGate};
 
@@ -41,14 +40,11 @@ pub async fn refresh(
     headers: HeaderMap,
     Form(form): Form<RefreshForm>,
 ) -> Response {
-    let now = (state.now)();
-    let cookie = read_session_cookie(&headers);
-    let payload = cookie.and_then(|c| session::verify(&c, state.secret.as_ref(), now));
-    let payload = match payload {
+    let payload = match authenticate(&state, &headers) {
         Some(p) => p,
         None => return Redirect::to("/login").into_response(),
     };
-    if form._csrf.is_empty() || form._csrf != payload.csrf {
+    if !csrf_ok_for(&state, &payload, &form._csrf) {
         return (StatusCode::FORBIDDEN, "invalid csrf").into_response();
     }
 

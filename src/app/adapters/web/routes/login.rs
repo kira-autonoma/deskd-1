@@ -52,6 +52,19 @@ pub async fn login_request(
     headers: HeaderMap,
     Form(form): Form<LoginRequestForm>,
 ) -> Response {
+    // In trust_transport mode the magic-link flow is dead code — auth is
+    // bypassed by the network layer. Return 503 so misconfigured clients
+    // get a clear signal instead of an opaque 500 from an unwrap below.
+    // `external_url.is_none()` is the same condition expressed structurally
+    // (no URL to build the link from), so handle both with one branch.
+    if state.cfg.trust_transport || state.cfg.external_url.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "auth disabled — direct access via trusted transport",
+        )
+            .into_response();
+    }
+
     // CSRF: the request must include any non-empty `_csrf` value; we don't
     // bind it to a session yet because none exists pre-login. The hidden
     // field exists primarily to break naive cross-site form submissions
@@ -109,7 +122,13 @@ pub async fn login_request(
     // ── Issue the magic-link token ─────────────────────────────────────
     let expires_at = now + state.cfg.magic_link_ttl_seconds as i64;
     let token = state.tokens.issue(telegram_id, expires_at);
-    let url = build_magic_link(&state.cfg.external_url, &token);
+    // Safe: the early return above guarantees `external_url` is `Some` here.
+    let external_url = state
+        .cfg
+        .external_url
+        .as_deref()
+        .expect("external_url checked at the top of the handler");
+    let url = build_magic_link(external_url, &token);
 
     let body = format!(
         "Login to deskd: {url}\nSingle use, expires in {} minutes. \

@@ -10,9 +10,8 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 
 use crate::app::adapters::web::audit::{AuditEntry, Event};
-use crate::app::adapters::web::auth::session;
 use crate::app::adapters::web::routes::{
-    SESSION_COOKIE_NAME, client_ip, read_session_cookie, user_agent,
+    SESSION_COOKIE_NAME, authenticate, client_ip, csrf_ok_for, user_agent,
 };
 use crate::app::adapters::web::state::WebState;
 
@@ -27,16 +26,15 @@ pub async fn logout(
     headers: HeaderMap,
     Form(form): Form<LogoutForm>,
 ) -> Response {
-    let now = (state.now)();
     let ip = client_ip(&headers, Some(addr));
     let ua = user_agent(&headers);
 
     // Validate CSRF: cookie must verify AND `form._csrf` must match the
-    // CSRF token embedded inside the signed cookie.
-    let cookie = read_session_cookie(&headers);
-    let payload = cookie.and_then(|c| session::verify(&c, state.secret.as_ref(), now));
+    // CSRF token embedded inside the signed cookie. In trust_transport mode
+    // the synthetic session always authenticates and CSRF is moot.
+    let payload = authenticate(&state, &headers);
     let valid = match &payload {
-        Some(p) => !form._csrf.is_empty() && p.csrf == form._csrf,
+        Some(p) => csrf_ok_for(&state, p, &form._csrf),
         None => false,
     };
 

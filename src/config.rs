@@ -264,7 +264,10 @@ pub struct WebConfig {
     pub bind: String,
     /// Public-facing base URL used to construct magic-link login URLs.
     /// Example: `https://deskd.example.com`. Trailing slash is tolerated.
-    pub external_url: String,
+    /// Optional when [`trust_transport`] is `true` — the magic-link path is
+    /// unreachable so no URL is needed.
+    #[serde(default)]
+    pub external_url: Option<String>,
     /// Session cookie lifetime in days. Default 30.
     #[serde(default = "default_session_ttl_days")]
     pub session_ttl_days: u32,
@@ -281,6 +284,14 @@ pub struct WebConfig {
     /// Rate limit configuration.
     #[serde(default)]
     pub rate_limit: WebRateLimitConfig,
+    /// When true, the adapter trusts the transport layer for identity (e.g.
+    /// Tailscale, VPN). Bypasses magic-link auth entirely — any request
+    /// reaching the bound address is treated as authenticated. ONLY safe
+    /// when [`bind`] is on a non-public interface. Default `false` (auth
+    /// required). When `true`, [`external_url`] becomes optional and
+    /// [`allowed_telegram_ids`] is ignored.
+    #[serde(default)]
+    pub trust_transport: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1168,7 +1179,11 @@ web:
         let web = cfg.web.expect("web block parsed");
         assert!(web.enabled);
         assert_eq!(web.bind, "127.0.0.1:8127");
-        assert_eq!(web.external_url, "https://deskd.example.com");
+        assert_eq!(
+            web.external_url.as_deref(),
+            Some("https://deskd.example.com")
+        );
+        assert!(!web.trust_transport);
         assert_eq!(web.session_ttl_days, 30);
         assert_eq!(web.magic_link_ttl_seconds, 300);
         assert_eq!(web.allowed_telegram_ids, vec![123456i64, 987654i64]);
@@ -1189,7 +1204,8 @@ agents:
 
     #[test]
     fn test_workspace_config_web_minimal_uses_defaults() {
-        // Only `external_url` is mandatory — everything else has a default.
+        // Every field has a default — including `external_url`, which is now
+        // optional (None when `trust_transport: true`).
         let yaml = r#"
 agents:
   - name: kira
@@ -1205,6 +1221,28 @@ web:
         assert_eq!(web.magic_link_ttl_seconds, 300);
         assert!(web.allowed_telegram_ids.is_empty());
         assert_eq!(web.rate_limit.auth_requests_per_hour, 20);
+        assert!(!web.trust_transport);
+    }
+
+    #[test]
+    fn test_workspace_config_web_trust_transport_omits_external_url() {
+        // `trust_transport: true` is for Tailscale-internal deployments —
+        // the magic-link path is unreachable, so `external_url` can be
+        // omitted entirely.
+        let yaml = r#"
+agents:
+  - name: kira
+    work_dir: /home/kira
+web:
+  enabled: true
+  bind: 100.64.0.1:8127
+  trust_transport: true
+"#;
+        let cfg: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let web = cfg.web.expect("web block parsed");
+        assert!(web.enabled);
+        assert!(web.trust_transport);
+        assert!(web.external_url.is_none());
     }
 
     #[test]
