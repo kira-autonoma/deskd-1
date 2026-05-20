@@ -238,6 +238,7 @@ mod tests {
             federation: None,
             github_webhooks: None,
             metrics: None,
+            cost: None,
         }
     }
 

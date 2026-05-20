@@ -5,6 +5,7 @@
 //! card has a stable `id="agent-{name}"` so htmx SSE swaps can replace it.
 
 pub mod cards;
+pub mod cost;
 pub mod detail;
 pub mod strip;
 

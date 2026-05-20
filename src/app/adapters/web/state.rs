@@ -8,10 +8,11 @@
 use std::sync::{Arc, Mutex};
 
 use crate::app::metrics::DiskMetrics;
-use crate::config::{GitHubWebhookConfig, WebConfig};
+use crate::config::{CostConfig, GitHubWebhookConfig, WebConfig};
 
 use super::audit::AuditLog;
 use super::auth::magic_link::TokenStore;
+use super::data_cost::{CostCache, GhClient};
 use super::dispatch::{AgentCommandDispatcher, BusSender, TelegramDispatcher};
 use super::middleware::rate_limit::RateLimiter;
 use super::routes::github_webhook::DeliveryDedupe;
@@ -55,6 +56,17 @@ pub struct WebState {
     /// Bus socket used by `/metrics/refresh` to emit `metrics.updated`
     /// after a manual sample. `None` in tests that don't run a bus.
     pub metrics_bus: Option<Arc<String>>,
+    /// Cost & pipeline dashboard config (#473). When `None` the
+    /// `/dashboard/cost` + `/api/cost/feed` routes return 404.
+    pub cost: Option<Arc<CostConfig>>,
+    /// Shared `gh issue list` client used by the cost dashboard. Always
+    /// populated — production wires `CommandGhClient`, tests inject a
+    /// recording double. Routes that don't need a `gh` client ignore it.
+    pub gh: Arc<dyn GhClient>,
+    /// 60-second `gh issue list` cache (#473). Shared with the SSE
+    /// feed so a busy dashboard with many tabs only hits gh once per
+    /// minute per repo.
+    pub cost_cache: CostCache,
 }
 
 /// Returns a unix timestamp in seconds. Boxed so we can stub it out in tests.

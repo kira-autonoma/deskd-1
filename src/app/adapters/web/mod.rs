@@ -18,6 +18,7 @@
 pub mod audit;
 pub mod auth;
 pub mod data;
+pub mod data_cost;
 pub mod dispatch;
 pub mod middleware;
 pub mod router;
@@ -31,10 +32,11 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::app::metrics::DiskMetrics;
-use crate::config::{GitHubWebhookConfig, WebConfig};
+use crate::config::{CostConfig, GitHubWebhookConfig, WebConfig};
 
 use audit::AuditLog;
 use auth::{magic_link::TokenStore, secret};
+use data_cost::{CommandGhClient, CostCache, GhClient};
 use dispatch::{
     AgentCommandDispatcher, BusAgentCommandDispatcher, BusDispatcher, BusSender, TelegramDispatcher,
 };
@@ -53,6 +55,7 @@ pub fn build_state(
     github_webhooks: Option<GitHubWebhookConfig>,
     metrics: DiskMetrics,
     agent_homes: Vec<(String, String)>,
+    cost: Option<CostConfig>,
 ) -> Result<WebState> {
     let secret_bytes = secret::load_or_create()?;
     let bus_dispatcher = Arc::new(BusDispatcher::new(bus_socket.clone(), "web".to_string()));
@@ -62,6 +65,7 @@ pub fn build_state(
         bus_socket.clone(),
         "web".to_string(),
     ));
+    let gh: Arc<dyn GhClient> = Arc::new(CommandGhClient::default());
     Ok(build_state_with_dispatcher(
         cfg,
         secret_bytes,
@@ -72,6 +76,8 @@ pub fn build_state(
         metrics,
         agent_homes,
         Some(bus_socket),
+        cost,
+        gh,
     ))
 }
 
@@ -87,6 +93,8 @@ pub fn build_state_with_dispatcher(
     metrics: DiskMetrics,
     agent_homes: Vec<(String, String)>,
     metrics_bus: Option<String>,
+    cost: Option<CostConfig>,
+    gh: Arc<dyn GhClient>,
 ) -> WebState {
     let audit_path = audit::expand_home(&cfg.audit_log);
     let limit = cfg.rate_limit.auth_requests_per_hour;
@@ -107,21 +115,26 @@ pub fn build_state_with_dispatcher(
         metrics,
         agent_homes: Arc::new(agent_homes),
         metrics_bus: metrics_bus.map(Arc::new),
+        cost: cost.map(Arc::new),
+        gh,
+        cost_cache: CostCache::new(),
     }
 }
 
 /// Start the web adapter HTTP server. Returns when `cancel` is triggered or
 /// `axum::serve` exits with an error. Bound to `cfg.bind`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     cfg: WebConfig,
     bus_socket: String,
     github_webhooks: Option<GitHubWebhookConfig>,
     metrics: DiskMetrics,
     agent_homes: Vec<(String, String)>,
+    cost: Option<CostConfig>,
     cancel: CancellationToken,
 ) -> Result<()> {
     let bind = cfg.bind.clone();
-    let state = build_state(cfg, bus_socket, github_webhooks, metrics, agent_homes)?;
+    let state = build_state(cfg, bus_socket, github_webhooks, metrics, agent_homes, cost)?;
     run_with_state(state, bind, cancel).await
 }
 

@@ -336,6 +336,7 @@ pub async fn serve(config_path: String) -> Result<()> {
             let github_webhooks = workspace.github_webhooks.clone();
             let metrics_for_web = disk_metrics.clone();
             let agent_homes_for_web = metrics_cfg.agents.clone();
+            let cost_for_web = workspace.cost.clone();
             tokio::spawn(async move {
                 if let Err(e) = web::run(
                     web_cfg,
@@ -343,6 +344,7 @@ pub async fn serve(config_path: String) -> Result<()> {
                     github_webhooks,
                     metrics_for_web,
                     agent_homes_for_web,
+                    cost_for_web,
                     cancel_handle,
                 )
                 .await

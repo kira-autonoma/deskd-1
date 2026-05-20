@@ -93,6 +93,44 @@ pub fn metrics_refresh_form(csrf: &str) -> String {
     )
 }
 
+/// Render the `/dashboard/cost` page (#473). Mirrors the agent
+/// dashboard chrome (topbar + vendored htmx + dashboard.css) and embeds a
+/// `<section>` wired to the `/api/cost/feed` SSE channel for live diffs.
+pub fn cost_page(telegram_id: i64, csrf: &str, cost_body_html: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>deskd · cost &amp; pipeline</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/dashboard.css">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx-sse.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>deskd</h1>
+  <span class="topbar__user">tg:{telegram_id}</span>
+  <form class="topbar__logout" method="post" action="/logout">
+    <input type="hidden" name="_csrf" value="{csrf}">
+    <button type="submit">Log out</button>
+  </form>
+</header>
+<main class="cost-dashboard">
+  <nav class="cost-nav"><a href="/">← back to agents</a></nav>
+  <section id="cost-body" hx-ext="sse" sse-connect="/api/cost/feed" sse-swap="cost-body">
+{cost_body_html}
+  </section>
+</main>
+</body>
+</html>"#,
+        telegram_id = telegram_id,
+        csrf = html_escape(csrf),
+        cost_body_html = cost_body_html,
+    )
+}
+
 /// Render the per-agent detail page (#445 + #446). Layout matches the
 /// issue mockup: header → flash → metadata → disk breakdown → action
 /// buttons → tasklog → live SSE tail. The `disk_html` block (#446) is

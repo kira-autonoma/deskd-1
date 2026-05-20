@@ -130,6 +130,9 @@ fn build_state() -> (WebState, RecordingAgentCommandDispatcher, tempfile::TempDi
         metrics: deskd::app::metrics::DiskMetrics::new(metrics_cache),
         agent_homes: Arc::new(Vec::new()),
         metrics_bus: None,
+        cost: None,
+        gh: Arc::new(deskd::app::adapters::web::data_cost::testing::RecordingGhClient::new()),
+        cost_cache: deskd::app::adapters::web::data_cost::CostCache::new(),
     };
     (state, commands, dir)
 }

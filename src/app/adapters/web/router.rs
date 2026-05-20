@@ -7,7 +7,8 @@ use axum::{
 
 use super::middleware::headers::security_headers;
 use super::routes::{
-    agent_detail, dashboard, github_webhook, health, login, logout, metrics, sse, static_assets,
+    agent_detail, cost, cost_feed, dashboard, github_webhook, health, login, logout, metrics, sse,
+    static_assets,
 };
 use super::state::WebState;
 
@@ -24,6 +25,9 @@ pub fn build(state: WebState) -> Router {
         .route("/logout", post(logout::logout))
         .route("/webhooks/github", post(github_webhook::github_webhook))
         .route("/metrics/refresh", post(metrics::refresh))
+        // ─── #473: cost & pipeline dashboard ────────────────────────────
+        .route("/dashboard/cost", get(cost::dashboard))
+        .route("/api/cost/feed", get(cost_feed::feed))
         // ─── #445: per-agent detail + structured commands ───────────────
         .route("/agent/{name}", get(agent_detail::detail))
         .route("/agent/{name}/events", get(agent_detail::events))

@@ -93,6 +93,12 @@ pub struct WorkspaceConfig {
     /// without modification.
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
+    /// Cost & pipeline dashboard (#473). When present (with non-empty repos
+    /// list) the web adapter mounts `/dashboard/cost` + `/api/cost/feed` and
+    /// queries `gh` for the configured repos. Absent → routes return 404 and
+    /// no cost data is collected.
+    #[serde(default)]
+    pub cost: Option<CostConfig>,
 }
 
 /// Top-level metrics block — `metrics:` in workspace.yaml (#446).
@@ -328,6 +334,91 @@ fn default_auth_requests_per_hour() -> u32 {
 
 fn default_web_audit_log() -> String {
     "~/.deskd/logs/web-audit.jsonl".to_string()
+}
+
+/// Cost & pipeline dashboard config — `cost:` in workspace.yaml (#473).
+///
+/// Maps `est:S | M | L | XL` issue labels to token counts so the dashboard
+/// can render an estimate column. Repositories listed in `repos` are queried
+/// via `gh` for open `agent-ready` issues (pipeline) and recently-closed
+/// issues (history). `weekly_ceiling` drives the optional budget bar; if
+/// unset, the bar is omitted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostConfig {
+    /// Bucket → token mapping. Default: S=10k, M=50k, L=200k, XL=500k.
+    #[serde(default = "default_cost_buckets")]
+    pub buckets: CostBuckets,
+    /// Optional weekly token ceiling. Drives the budget bar at the top of
+    /// `/dashboard/cost`. When `None` the bar is omitted.
+    #[serde(default)]
+    pub weekly_ceiling: Option<u64>,
+    /// How many days of closed-ticket history to surface. Default 7.
+    #[serde(default = "default_cost_history_days")]
+    pub history_days: u32,
+    /// `owner/repo` strings queried via `gh`. Empty → no pipeline / history.
+    #[serde(default)]
+    pub repos: Vec<String>,
+    /// Issue label used to flag «ready for an agent to pick up». Default
+    /// `agent-ready` matches the rest of the Nassau ecosystem.
+    #[serde(default = "default_cost_ready_label")]
+    pub ready_label: String,
+}
+
+impl Default for CostConfig {
+    fn default() -> Self {
+        Self {
+            buckets: default_cost_buckets(),
+            weekly_ceiling: None,
+            history_days: default_cost_history_days(),
+            repos: Vec::new(),
+            ready_label: default_cost_ready_label(),
+        }
+    }
+}
+
+/// `est:<S|M|L|XL>` → token-count mapping. Configurable per the AC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostBuckets {
+    #[serde(rename = "S", alias = "s")]
+    pub s: u64,
+    #[serde(rename = "M", alias = "m")]
+    pub m: u64,
+    #[serde(rename = "L", alias = "l")]
+    pub l: u64,
+    #[serde(rename = "XL", alias = "xl")]
+    pub xl: u64,
+}
+
+impl CostBuckets {
+    /// Resolve `est:<bucket>` to a token count. Returns `None` for unknown
+    /// labels — the renderer surfaces «unknown» so the operator can spot
+    /// missing labels at a glance.
+    pub fn lookup(&self, bucket: &str) -> Option<u64> {
+        match bucket.to_ascii_uppercase().as_str() {
+            "S" => Some(self.s),
+            "M" => Some(self.m),
+            "L" => Some(self.l),
+            "XL" => Some(self.xl),
+            _ => None,
+        }
+    }
+}
+
+fn default_cost_buckets() -> CostBuckets {
+    CostBuckets {
+        s: 10_000,
+        m: 50_000,
+        l: 200_000,
+        xl: 500_000,
+    }
+}
+
+fn default_cost_history_days() -> u32 {
+    7
+}
+
+fn default_cost_ready_label() -> String {
+    "agent-ready".to_string()
 }
 
 /// Alert configuration block — `alerts:` in workspace.yaml.
@@ -1243,6 +1334,68 @@ web:
         assert!(web.enabled);
         assert!(web.trust_transport);
         assert!(web.external_url.is_none());
+    }
+
+    #[test]
+    fn test_workspace_config_cost_block_full() {
+        let yaml = r#"
+agents:
+  - name: kira
+    work_dir: /home/kira
+cost:
+  buckets:
+    S: 12000
+    M: 60000
+    L: 250000
+    XL: 600000
+  weekly_ceiling: 5000000
+  history_days: 14
+  repos:
+    - kgatilin/deskd
+    - mikeshogin/archlint
+"#;
+        let cfg: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let cost = cfg.cost.expect("cost block parsed");
+        assert_eq!(cost.buckets.s, 12_000);
+        assert_eq!(cost.buckets.m, 60_000);
+        assert_eq!(cost.buckets.l, 250_000);
+        assert_eq!(cost.buckets.xl, 600_000);
+        assert_eq!(cost.weekly_ceiling, Some(5_000_000));
+        assert_eq!(cost.history_days, 14);
+        assert_eq!(cost.repos.len(), 2);
+        assert_eq!(cost.ready_label, "agent-ready");
+    }
+
+    #[test]
+    fn test_workspace_config_cost_block_defaults() {
+        let yaml = r#"
+agents:
+  - name: kira
+    work_dir: /home/kira
+cost:
+  repos:
+    - kgatilin/deskd
+"#;
+        let cfg: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let cost = cfg.cost.expect("cost block parsed");
+        assert_eq!(cost.buckets.s, 10_000);
+        assert_eq!(cost.buckets.m, 50_000);
+        assert_eq!(cost.buckets.l, 200_000);
+        assert_eq!(cost.buckets.xl, 500_000);
+        assert!(cost.weekly_ceiling.is_none());
+        assert_eq!(cost.history_days, 7);
+        assert_eq!(cost.ready_label, "agent-ready");
+    }
+
+    #[test]
+    fn test_workspace_config_cost_buckets_lookup() {
+        let buckets = default_cost_buckets();
+        assert_eq!(buckets.lookup("S"), Some(10_000));
+        assert_eq!(buckets.lookup("M"), Some(50_000));
+        assert_eq!(buckets.lookup("L"), Some(200_000));
+        assert_eq!(buckets.lookup("XL"), Some(500_000));
+        assert_eq!(buckets.lookup("xl"), Some(500_000));
+        assert_eq!(buckets.lookup("XXL"), None);
     }
 
     #[test]

@@ -89,6 +89,9 @@ fn build_state(rate_limit: u32) -> (WebState, RecordingDispatcher, tempfile::Tem
         metrics: deskd::app::metrics::DiskMetrics::new(metrics_cache),
         agent_homes: Arc::new(Vec::new()),
         metrics_bus: None,
+        cost: None,
+        gh: Arc::new(deskd::app::adapters::web::data_cost::testing::RecordingGhClient::new()),
+        cost_cache: deskd::app::adapters::web::data_cost::CostCache::new(),
     };
     (state, dispatcher, dir)
 }
@@ -593,6 +596,9 @@ fn build_state_trust_transport() -> (WebState, RecordingDispatcher, tempfile::Te
         metrics: deskd::app::metrics::DiskMetrics::new(metrics_cache),
         agent_homes: Arc::new(Vec::new()),
         metrics_bus: None,
+        cost: None,
+        gh: Arc::new(deskd::app::adapters::web::data_cost::testing::RecordingGhClient::new()),
+        cost_cache: deskd::app::adapters::web::data_cost::CostCache::new(),
     };
     (state, dispatcher, dir)
 }
