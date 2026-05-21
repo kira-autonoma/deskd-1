@@ -52,6 +52,24 @@ jobs:
         if: contains(matrix.target, 'linux')
         run: sudo apt-get update && sudo apt-get install -y musl-tools perl
 
+      # Stamp Cargo.toml from the tag name so the built binary reports the
+      # actual release semver via CARGO_PKG_VERSION (#482). Cargo.toml stays
+      # at 0.1.0 in-tree; the version is only injected at release-build time.
+      # `perl -pi -e` works on both GNU sed (Linux) and BSD sed (macOS) runners.
+      - name: Stamp version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Guard against non-semver tags (e.g. someone tagging `latest`).
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not yield a valid semver ('$VERSION')"
+            exit 1
+          fi
+          echo "Stamping Cargo.toml with version $VERSION"
+          perl -pi -e "s/^version = \".*\"/version = \"$VERSION\"/ if /^\\[package\\]/../^\\[/" Cargo.toml
+          grep '^version' Cargo.toml
+
       - name: Build (Linux musl)
         if: contains(matrix.target, 'musl')
         run: cargo build --release --target ${{ matrix.target }} --features vendored-openssl
