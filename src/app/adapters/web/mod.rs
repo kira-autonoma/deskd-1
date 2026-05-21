@@ -20,6 +20,7 @@ pub mod auth;
 pub mod data;
 pub mod data_chart;
 pub mod data_cost;
+pub mod data_log;
 pub mod dispatch;
 pub mod middleware;
 pub mod router;

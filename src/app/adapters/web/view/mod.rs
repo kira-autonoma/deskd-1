@@ -4,12 +4,16 @@
 //! suitable for embedding in the larger `dashboard_page` template. Each
 //! card has a stable `id="agent-{name}"` so htmx SSE swaps can replace it.
 
+pub mod breadcrumb;
 pub mod cards;
 pub mod chart;
 pub mod cost;
 pub mod detail;
+pub mod log;
 pub mod strip;
+pub mod task;
 
+pub use breadcrumb::{Crumb, breadcrumb};
 pub use cards::{
     agent_card, agent_card_id, agent_card_with_disk, agents_section, agents_section_with_disk,
     format_bytes, format_relative,
@@ -18,7 +22,9 @@ pub use detail::{
     agent_disk_detail_html, confirm_page_body, detail_actions, detail_bus_tail, detail_flash,
     detail_header, detail_meta, detail_tasks,
 };
+pub use log::log_view;
 pub use strip::vps_strip;
+pub use task::task_view;
 
 /// HTML-escape a string. Internal — kept here so all view functions share one
 /// implementation and the templates module's copy doesn't drift.

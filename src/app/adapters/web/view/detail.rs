@@ -182,8 +182,8 @@ pub fn detail_tasks(detail: &AgentDetail) -> String {
     }
 
     let mut rows = String::new();
-    for row in &detail.recent_tasks {
-        rows.push_str(&render_task_row(row));
+    for (idx, row) in detail.recent_tasks.iter().enumerate() {
+        rows.push_str(&render_task_row(&detail.summary.name, idx, row));
     }
 
     format!(
@@ -198,18 +198,24 @@ pub fn detail_tasks(detail: &AgentDetail) -> String {
     )
 }
 
-fn render_task_row(row: &TaskLogRow) -> String {
+fn render_task_row(agent: &str, idx: usize, row: &TaskLogRow) -> String {
     let icon = status_icon(&row.status);
     let status = html_escape(&row.status);
     let ts = format_ts_short(&row.ts);
     let summary = html_escape(&row.summary);
     let duration = crate::app::tasklog::format_duration(row.duration_ms);
+    // #485: rows link to the task/session view. The task id is the index
+    // into the recent-tasks list (newest first); the route handler
+    // resolves the same entry by index.
+    let href = format!("/agent/{}/task/{}", urlsafe(agent), idx);
     format!(
         r#"<li class="detail-tasks__row detail-tasks__row--{status_class}">
-  <span class="detail-tasks__icon" title="{status}">{icon}</span>
-  <time>{ts}</time>
-  <span class="detail-tasks__summary">{summary}</span>
-  <span class="detail-tasks__duration">{duration}</span>
+  <a class="detail-tasks__link" href="{href}">
+    <span class="detail-tasks__icon" title="{status}">{icon}</span>
+    <time>{ts}</time>
+    <span class="detail-tasks__summary">{summary}</span>
+    <span class="detail-tasks__duration">{duration}</span>
+  </a>
 </li>"#,
         status_class = status,
         status = status,
@@ -217,6 +223,7 @@ fn render_task_row(row: &TaskLogRow) -> String {
         ts = ts,
         summary = summary,
         duration = duration,
+        href = html_escape(&href),
     )
 }
 
@@ -447,6 +454,30 @@ mod tests {
         // status icons.
         assert!(html.contains("✓"));
         assert!(html.contains("✗"));
+    }
+
+    #[test]
+    fn detail_tasks_rows_link_to_task_view() {
+        // #485 AC: rows must be clickable to task/session view.
+        let mut d = fixture("kira");
+        d.recent_tasks = vec![
+            TaskLogRow {
+                status: "ok".into(),
+                ts: "2026-05-09T14:32:00Z".into(),
+                summary: "task one".into(),
+                duration_ms: 1_500,
+            },
+            TaskLogRow {
+                status: "error".into(),
+                ts: "2026-05-09T14:18:00Z".into(),
+                summary: "task two".into(),
+                duration_ms: 3_000,
+            },
+        ];
+        let html = detail_tasks(&d);
+        assert!(html.contains(r#"href="/agent/kira/task/0""#));
+        assert!(html.contains(r#"href="/agent/kira/task/1""#));
+        assert!(html.contains(r#"class="detail-tasks__link""#));
     }
 
     #[test]

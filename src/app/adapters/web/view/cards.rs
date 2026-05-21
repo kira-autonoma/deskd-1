@@ -55,19 +55,27 @@ pub fn agent_card_with_disk(
     };
     let task_block = render_task_block(summary);
 
+    // #485: whole-card click target. The body is wrapped in a single
+    // `<a class="agent-card__link">` so any tap inside the card (>44px
+    // height once CSS lays it out) navigates to the agent detail page.
+    // The `<h2 class="agent-card__name">` element keeps its own
+    // semantic heading but no longer hosts a redundant inner anchor —
+    // nesting `<a>` inside `<a>` would break flat HTML.
     format!(
         r#"<article id="{id}" class="agent-card">
-  <header class="agent-card__head">
-    <h2 class="agent-card__name"><a href="/agent/{name}">{name}</a></h2>
-    <span class="agent-card__status agent-card__status--{status_class}">{status_label}</span>
-    <span class="agent-card__model">{model}</span>
-  </header>
-  <dl class="agent-card__rows">
-    <dt>last activity</dt><dd>{last_activity}</dd>
-    {context_line}
-    <dt>home dir</dt>{home_dir_cell}
-    {task_block}
-  </dl>
+  <a class="agent-card__link" href="/agent/{name}">
+    <header class="agent-card__head">
+      <h2 class="agent-card__name">{name}</h2>
+      <span class="agent-card__status agent-card__status--{status_class}">{status_label}</span>
+      <span class="agent-card__model">{model}</span>
+    </header>
+    <dl class="agent-card__rows">
+      <dt>last activity</dt><dd>{last_activity}</dd>
+      {context_line}
+      <dt>home dir</dt>{home_dir_cell}
+      {task_block}
+    </dl>
+  </a>
 </article>"#,
         id = html_escape(&id),
         name = html_escape(&summary.name),
@@ -478,6 +486,34 @@ mod tests {
         let s = summary("kira");
         let html = agent_card(&s);
         assert!(!html.contains("current task"));
+    }
+
+    #[test]
+    fn card_body_wrapped_in_anchor_for_full_click_target() {
+        // #485 AC: cards must be fully clickable. The card body is wrapped
+        // in a single `<a class="agent-card__link">` whose href points at
+        // the agent detail page.
+        let s = summary("kira");
+        let html = agent_card(&s);
+        assert!(
+            html.contains(r#"<a class="agent-card__link" href="/agent/kira">"#),
+            "missing whole-card anchor; got:\n{}",
+            html,
+        );
+        // Anchor wraps the head + dl, so look for both inside the anchor
+        // by checking the anchor opens before the header and closes after
+        // the closing dl.
+        let a_open = html.find(r#"<a class="agent-card__link""#).unwrap();
+        let dl_close = html.rfind("</dl>").unwrap();
+        let a_close = html.rfind("</a>").unwrap();
+        assert!(a_open < dl_close, "anchor must open before <dl>");
+        assert!(a_close > dl_close, "anchor must close after </dl>");
+        // No nested anchors (h2 no longer carries its own <a>).
+        assert!(
+            !html.contains(r#"<h2 class="agent-card__name"><a"#),
+            "h2 must not carry a nested anchor; got:\n{}",
+            html
+        );
     }
 
     #[test]

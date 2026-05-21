@@ -386,9 +386,17 @@ fn render_detail_page(
     let actions_html = view::detail_actions(detail, csrf);
     let tasks_html = view::detail_tasks(detail);
     let bus_tail_html = view::detail_bus_tail(detail);
+    // #485: breadcrumb above the header. On the detail page the agent
+    // name is the current crumb.
+    let crumbs = vec![
+        view::Crumb::link("dashboard", "/"),
+        view::Crumb::current(detail.summary.name.clone()),
+    ];
+    let breadcrumb_html = view::breadcrumb(&crumbs);
     let body = templates::agent_detail_page(
         telegram_id,
         csrf,
+        &breadcrumb_html,
         &header_html,
         &flash_html,
         &meta_html,

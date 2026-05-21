@@ -1,6 +1,8 @@
 //! Route handlers for the web adapter (#443).
 
 pub mod agent_detail;
+pub mod agent_log;
+pub mod agent_task;
 pub mod cost;
 pub mod cost_feed;
 pub mod dashboard;

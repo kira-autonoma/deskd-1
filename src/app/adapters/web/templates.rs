@@ -135,15 +135,18 @@ pub fn cost_page(telegram_id: i64, csrf: &str, cost_body_html: &str) -> String {
     )
 }
 
-/// Render the per-agent detail page (#445 + #446). Layout matches the
-/// issue mockup: header → flash → metadata → disk breakdown → action
-/// buttons → tasklog → live SSE tail. The `disk_html` block (#446) is
-/// embedded right after the meta grid so per-agent disk usage is visible
-/// without scrolling.
+/// Render the per-agent detail page (#445 + #446 + #485). Layout
+/// matches the issue mockup: breadcrumb → header → flash → metadata →
+/// disk breakdown → action buttons → tasklog → live SSE tail. The
+/// `disk_html` block (#446) is embedded right after the meta grid so
+/// per-agent disk usage is visible without scrolling. #485 adds a
+/// breadcrumb above the header so every drill-down level shares the
+/// same navigation chrome.
 #[allow(clippy::too_many_arguments)]
 pub fn agent_detail_page(
     telegram_id: i64,
     csrf: &str,
+    breadcrumb_html: &str,
     header_html: &str,
     flash_html: &str,
     meta_html: &str,
@@ -173,6 +176,7 @@ pub fn agent_detail_page(
   </form>
 </header>
 <main class="detail">
+  {breadcrumb_html}
   {header_html}
   {flash_html}
   {meta_html}
@@ -185,6 +189,7 @@ pub fn agent_detail_page(
 </html>"#,
         telegram_id = telegram_id,
         csrf = html_escape(csrf),
+        breadcrumb_html = breadcrumb_html,
         header_html = header_html,
         flash_html = flash_html,
         meta_html = meta_html,
@@ -192,6 +197,49 @@ pub fn agent_detail_page(
         actions_html = actions_html,
         tasks_html = tasks_html,
         bus_tail_html = bus_tail_html,
+    )
+}
+
+/// Render a generic agent-scoped drill-down page (#485) — task/session
+/// view or log view. Shares the dashboard chrome (topbar + stylesheet)
+/// and embeds the supplied breadcrumb + body. `title_suffix` becomes
+/// the page `<title>` (already HTML-safe — callers pass plain text).
+pub fn agent_drilldown_page(
+    telegram_id: i64,
+    csrf: &str,
+    title_suffix: &str,
+    breadcrumb_html: &str,
+    body_html: &str,
+) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>deskd · {title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>deskd</h1>
+  <span class="topbar__user">tg:{telegram_id}</span>
+  <form class="topbar__logout" method="post" action="/logout">
+    <input type="hidden" name="_csrf" value="{csrf}">
+    <button type="submit">Log out</button>
+  </form>
+</header>
+<main class="detail drilldown">
+  {breadcrumb_html}
+  {body_html}
+</main>
+</body>
+</html>"#,
+        title = html_escape(title_suffix),
+        telegram_id = telegram_id,
+        csrf = html_escape(csrf),
+        breadcrumb_html = breadcrumb_html,
+        body_html = body_html,
     )
 }
 
@@ -407,6 +455,7 @@ mod tests {
         let html = agent_detail_page(
             1,
             "csrf",
+            "<!--CRUMB-->",
             "<!--HEADER-->",
             "<!--FLASH-->",
             "<!--META-->",
@@ -416,9 +465,10 @@ mod tests {
             "<!--BUS-->",
         );
         // Every section must appear in document order so the layout matches
-        // the issue mockup (header → flash → meta → disk → actions → tasks →
-        // bus tail).
+        // the issue mockup (breadcrumb → header → flash → meta → disk →
+        // actions → tasks → bus tail).
         let positions = [
+            "<!--CRUMB-->",
             "<!--HEADER-->",
             "<!--FLASH-->",
             "<!--META-->",
@@ -437,8 +487,28 @@ mod tests {
 
     #[test]
     fn agent_detail_page_escapes_csrf_token() {
-        let html = agent_detail_page(1, "<x>", "", "", "", "", "", "", "");
+        let html = agent_detail_page(1, "<x>", "", "", "", "", "", "", "", "");
         assert!(html.contains("&lt;x&gt;"));
         assert!(!html.contains(r#"value="<x>""#));
+    }
+
+    #[test]
+    fn agent_drilldown_page_includes_chrome_and_body() {
+        let html = agent_drilldown_page(7, "csrf-x", "log view", "<!--CRUMB-->", "<!--BODY-->");
+        assert!(html.contains("tg:7"));
+        assert!(html.contains("deskd · log view"));
+        assert!(html.contains("<!--CRUMB-->"));
+        assert!(html.contains("<!--BODY-->"));
+        // CSP-friendly: no inline <style>.
+        assert!(!html.contains("<style>"));
+        // Same stylesheet as the rest of the app.
+        assert!(html.contains(r#"/static/dashboard.css"#));
+    }
+
+    #[test]
+    fn agent_drilldown_page_escapes_title() {
+        let html = agent_drilldown_page(1, "x", "<x>", "", "");
+        assert!(html.contains("deskd · &lt;x&gt;"));
+        assert!(!html.contains("deskd · <x>"));
     }
 }

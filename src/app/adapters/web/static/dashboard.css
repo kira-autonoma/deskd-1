@@ -59,8 +59,9 @@ small { color: #777; }
 .agent-disk__row:last-child { border-bottom: none; }
 .agent-disk__name { color: #1a1a1a; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; }
 .agent-disk__bytes { color: #555; }
-.agent-card__name a { color: inherit; text-decoration: none; border-bottom: 1px dotted #aaa; }
-.agent-card__name a:hover { border-bottom-color: #1a1a1a; }
+/* Note: pre-#485 `.agent-card__name a` styles removed — the entire card
+ * body is now wrapped in `.agent-card__link` so the heading no longer
+ * carries its own nested anchor. */
 @media (max-width: 420px) {
   .agent-card__rows { grid-template-columns: 1fr; gap: 0.05rem 0; }
   .agent-card__rows dt { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 0.3rem; }
@@ -105,6 +106,60 @@ small { color: #777; }
 .detail-bus__empty { color: #777; }
 .confirm { padding: 0.75rem; max-width: 480px; margin: 1rem auto; background: #fff; border: 1px solid #e0e3eb; border-radius: 8px; }
 .confirm h1 { margin-top: 0; }
+
+/* ── Agent drill-down (#485): breadcrumb, clickable cards, log viewer ── */
+.breadcrumb { margin: 0 0 0.6rem; font-size: 0.85rem; }
+.breadcrumb__list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 0.5rem; }
+.breadcrumb__item { color: #555; }
+.breadcrumb__item:not(:last-child)::after { content: "›"; margin-left: 0.5rem; color: #aaa; }
+.breadcrumb__item a { color: #4a72d9; text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; padding: 0 0.15rem; }
+.breadcrumb__item a:hover { text-decoration: underline; }
+.breadcrumb__item--current { font-weight: 600; color: #1a1a1a; }
+/* Whole-card click target — #485 AC says cards must be fully clickable.
+ * The anchor wraps the entire card body; the article keeps its visual
+ * border and the link inherits colour so it reads as one tile. */
+.agent-card { padding: 0; }
+.agent-card__link { display: block; padding: 0.75rem 0.9rem; color: inherit; text-decoration: none; min-height: 44px; }
+.agent-card__link:hover { background: #f9faff; }
+.agent-card__link:focus-visible { outline: 2px solid #4a72d9; outline-offset: -2px; }
+.agent-card__name { color: inherit; text-decoration: none; }
+/* Task row links: same tap-target rules. */
+.detail-tasks__row { padding: 0; }
+.detail-tasks__link { display: grid; grid-template-columns: 1.25rem 5rem 1fr max-content; gap: 0.4rem; align-items: baseline; padding: 0.4rem 0.3rem; min-height: 44px; color: inherit; text-decoration: none; border-radius: 4px; }
+.detail-tasks__link:hover { background: #f4f6fb; }
+.detail-tasks__link:focus-visible { outline: 2px solid #4a72d9; outline-offset: -2px; }
+/* Log viewer. */
+.log-view { background: #fff; border: 1px solid #e0e3eb; border-radius: 8px; padding: 0.75rem 0.9rem; }
+.log-view__head { margin-bottom: 0.4rem; }
+.log-view__head h2 { margin: 0; font-size: 0.95rem; }
+.log-view__meta { margin: 0.2rem 0 0; color: #777; }
+.log-view__filter code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.log-view__actions { margin: 0.2rem 0 0.5rem; }
+.log-view__actions a { color: #4a72d9; text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.log-view__actions a:hover { text-decoration: underline; }
+.log-view__pre { background: #0e1116; color: #d4d4d4; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; line-height: 1.4; padding: 0.6rem 0.75rem; border-radius: 6px; overflow-x: auto; white-space: pre; margin: 0; max-height: 70vh; }
+.log-view__empty { color: #777; font-size: 0.85rem; }
+/* Task/session view. */
+.task-view { background: #fff; border: 1px solid #e0e3eb; border-radius: 8px; padding: 0.75rem 0.9rem; }
+.task-view__head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
+.task-view__head h2 { margin: 0; font-size: 1rem; }
+.task-view__status { font-size: 0.75rem; padding: 0.1rem 0.45rem; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; background: #eef0f5; color: #555; }
+.task-view__status--ok { background: #e6f4ea; color: #1e7e34; }
+.task-view__status--error { background: #fbeaea; color: #b02929; }
+.task-view__status--skip { background: #fff4d6; color: #806600; }
+.task-view__status--empty { background: #eef0f5; color: #777; }
+.task-view__meta { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; font-size: 0.9rem; }
+.task-view__meta dt { color: #666; }
+.task-view__meta dd { margin: 0; }
+.task-view__actions { margin: 0.7rem 0 0; }
+.task-view__log-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 0.6rem; color: #fff; background: #4a72d9; border-radius: 6px; text-decoration: none; font-weight: 600; }
+.task-view__log-link:hover { background: #3960c0; }
+.task-view__log-link:focus-visible { outline: 2px solid #1a1a1a; outline-offset: 2px; }
+@media (max-width: 420px) {
+  .log-view__pre { font-size: 0.75rem; }
+  .task-view__meta { grid-template-columns: 1fr; gap: 0.05rem 0; }
+  .task-view__meta dt { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 0.3rem; color: #666; }
+}
 
 /* ── Top-of-page chart (#484) ─────────────────────────────────────────── */
 .chart-block { background: #fff; border: 1px solid #e0e3eb; border-radius: 8px; padding: 0.75rem 0.9rem; margin-bottom: 0.75rem; }

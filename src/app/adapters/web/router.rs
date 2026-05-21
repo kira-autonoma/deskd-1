@@ -7,8 +7,8 @@ use axum::{
 
 use super::middleware::headers::security_headers;
 use super::routes::{
-    agent_detail, cost, cost_feed, dashboard, github_webhook, health, login, logout, metrics, sse,
-    static_assets,
+    agent_detail, agent_log, agent_task, cost, cost_feed, dashboard, github_webhook, health, login,
+    logout, metrics, sse, static_assets,
 };
 use super::state::WebState;
 
@@ -39,6 +39,9 @@ pub fn build(state: WebState) -> Router {
         .route("/agent/{name}/restart/confirm", post(agent_detail::restart))
         .route("/agent/{name}/stop", post(agent_detail::stop_confirm_form))
         .route("/agent/{name}/stop/confirm", post(agent_detail::stop))
+        // ─── #485: agent drill-down (task/session view + log view) ─────
+        .route("/agent/{name}/task/{task_id}", get(agent_task::task))
+        .route("/agent/{name}/log", get(agent_log::log))
         .route("/static/htmx.min.js", get(static_assets::htmx_js))
         .route("/static/htmx-sse.js", get(static_assets::htmx_sse_js))
         .route("/static/dashboard.css", get(static_assets::dashboard_css))
