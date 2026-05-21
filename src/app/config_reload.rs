@@ -31,6 +31,7 @@ use tracing::info;
 
 use crate::app::agent_components::AgentComponents;
 use crate::app::config_changeset::{ConfigChangeset, classify_config_change};
+use crate::app::reload_state::ReloadState;
 use crate::app::{adapters, config_watcher, schedule, worker};
 use crate::config;
 use crate::infra::diag;
@@ -261,8 +262,12 @@ fn spawn_schedules(
 
 /// Watch the agent's deskd.yaml for changes and hot-reload components selectively.
 ///
-/// Polls the file mtime every 30 seconds. On change, uses `classify_config_change`
-/// to determine which components need restarting:
+/// Wakes on whichever fires first:
+///   * a 30-second mtime poll tick (file-watcher fallback path), or
+///   * an explicit `ReloadState::trigger()` (driven by `deskd reload`, #474).
+///
+/// On change, uses `classify_config_change` to determine which components need
+/// restarting:
 ///   - `system_prompt_only` → nothing restarted (system_prompt injected via bus by config_watcher)
 ///   - `adapters_changed` → cooperative cancel + respawn adapters only
 ///   - `schedules_changed` → abort + respawn schedule_watcher only
@@ -276,6 +281,7 @@ pub async fn watch_and_reload(
     bus_socket: String,
     agent_name: String,
     cfg_path: String,
+    reload_state: ReloadState,
 ) {
     let mut components = initial_components;
     let mut last_modified = file_mtime(&cfg_path);
@@ -286,17 +292,33 @@ pub async fn watch_and_reload(
     let mut last_agents_dir_mtime = agents_dir_mtime(&cfg_path, last_user_cfg.as_ref());
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        // Wake on either the 30s poll tick OR an explicit reload trigger.
+        // The trigger path is what `deskd reload` uses; the poll is the
+        // fallback for direct YAML edits.
+        let triggered = tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => false,
+            _ = reload_state.wait_for_trigger() => true,
+        };
 
         let current_mtime = file_mtime(&cfg_path);
         let current_agents_dir_mtime = agents_dir_mtime(&cfg_path, last_user_cfg.as_ref());
-        if current_mtime == last_modified && current_agents_dir_mtime == last_agents_dir_mtime {
+        // Explicit triggers always proceed even if no mtime delta is visible
+        // — e.g. the operator may want to re-apply the current config to
+        // recover from a transient adapter failure.
+        if !triggered
+            && current_mtime == last_modified
+            && current_agents_dir_mtime == last_agents_dir_mtime
+        {
             continue;
         }
         last_modified = current_mtime;
         last_agents_dir_mtime = current_agents_dir_mtime;
 
-        info!(agent = %agent_name, "config file changed, analysing diff");
+        info!(
+            agent = %agent_name,
+            triggered = triggered,
+            "config changed, analysing diff"
+        );
 
         // Reload config.
         let new_user_cfg = match config::UserConfig::load(&cfg_path) {
@@ -309,6 +331,9 @@ pub async fn watch_and_reload(
                     format!("failed to reload config, components unchanged: {}", e),
                     serde_json::json!({ "agent": agent_name, "path": cfg_path }),
                 );
+                reload_state
+                    .record_failure(format!("failed to parse {}: {}", cfg_path, e))
+                    .await;
                 continue;
             }
         };
@@ -332,6 +357,7 @@ pub async fn watch_and_reload(
             // system_prompt_only: config_watcher.rs injects the new prompt via bus.
             // No adapter or schedule disruption needed.
             info!(agent = %agent_name, "system_prompt changed only — no component restart needed");
+            reload_state.record_success(chrono::Utc::now()).await;
             continue;
         }
 
@@ -341,6 +367,7 @@ pub async fn watch_and_reload(
         {
             // Only non-restartable fields changed (e.g. mcp_config, context config).
             info!(agent = %agent_name, "config change requires no component restart");
+            reload_state.record_success(chrono::Utc::now()).await;
             continue;
         }
 
@@ -361,6 +388,7 @@ pub async fn watch_and_reload(
             )
             .await;
             info!(agent = %agent_name, adapters = components.adapter_handles.len(), "adapters restarted");
+            reload_state.record_success(chrono::Utc::now()).await;
             continue;
         }
 
@@ -372,6 +400,7 @@ pub async fn watch_and_reload(
             components.abort_schedules();
             spawn_schedules(&def, &bus_socket, &agent_name, &cfg_path, &mut components);
             info!(agent = %agent_name, "schedules restarted");
+            reload_state.record_success(chrono::Utc::now()).await;
             continue;
         }
 
@@ -415,6 +444,7 @@ pub async fn watch_and_reload(
                     summary = %summary,
                     "config reloaded: {}", summary
                 );
+                reload_state.record_success(chrono::Utc::now()).await;
             }
             Err(e) => {
                 diag::warn_event(
@@ -424,6 +454,9 @@ pub async fn watch_and_reload(
                     format!("failed to respawn components after config reload: {}", e),
                     serde_json::json!({ "agent": agent_name }),
                 );
+                reload_state
+                    .record_failure(format!("respawn failed: {}", e))
+                    .await;
             }
         }
     }

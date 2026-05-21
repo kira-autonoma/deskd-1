@@ -6,6 +6,7 @@ use tracing::info;
 use crate::app::adapters::federation;
 use crate::app::adapters::web;
 use crate::app::metrics;
+use crate::app::reload_state::ReloadState;
 use crate::app::{agent, alerts, bus, bus_api, config_reload, worker, workflow};
 use crate::config;
 use crate::infra::diag;
@@ -67,6 +68,10 @@ pub async fn serve(config_path: String) -> Result<()> {
         let state = agent::create_or_recover(def, user_cfg.as_ref()).await?;
         let name = state.config.name.clone();
         let bus_socket = def.bus_socket();
+        // Per-agent shared reload state — drives `deskd reload` (#474).
+        // Shared between the bus API (RPC handler) and the config_reload
+        // watcher (consumer of triggers, producer of last_reload_at).
+        let reload_state = ReloadState::new();
 
         // Ensure {work_dir}/.deskd/ exists and is owned by the agent's unix user.
         let bus_dir = std::path::Path::new(&def.work_dir).join(".deskd");
@@ -100,6 +105,8 @@ pub async fn serve(config_path: String) -> Result<()> {
             let bus = bus_socket.clone();
             let agent_name = name.clone();
             let ucfg_clone = user_cfg.clone();
+            let cfg_path_clone = cfg_path.clone();
+            let bus_api_reload_state = reload_state.clone();
             tokio::spawn(async move {
                 let task_store = crate::app::task::TaskStore::default_for_home();
                 let sm_store = crate::app::statemachine::StateMachineStore::default_for_home();
@@ -109,6 +116,8 @@ pub async fn serve(config_path: String) -> Result<()> {
                     &sm_store,
                     ucfg_clone.as_ref(),
                     &agent_name,
+                    &cfg_path_clone,
+                    bus_api_reload_state,
                 )
                 .await
                 {
@@ -239,6 +248,7 @@ pub async fn serve(config_path: String) -> Result<()> {
             let reload_bus = bus_socket.clone();
             let reload_name = name.clone();
             let reload_cfg = cfg_path.clone();
+            let watcher_reload_state = reload_state.clone();
             tokio::spawn(async move {
                 config_reload::watch_and_reload(
                     reload_def,
@@ -247,6 +257,7 @@ pub async fn serve(config_path: String) -> Result<()> {
                     reload_bus,
                     reload_name,
                     reload_cfg,
+                    watcher_reload_state,
                 )
                 .await;
             });

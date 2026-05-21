@@ -7,6 +7,7 @@ pub mod context;
 pub mod dashboard;
 pub mod doctor;
 pub mod graph;
+pub mod reload;
 pub mod remind;
 pub mod restart;
 pub mod schedule;

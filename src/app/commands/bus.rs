@@ -247,8 +247,10 @@ async fn handle_api(
         anyhow::bail!("Bus socket not found: {}", bus_socket);
     }
 
-    let user_config = resolve_config(config_opt)
-        .and_then(|path| match config::UserConfig::load(&path) {
+    let resolved_cfg_path = resolve_config(config_opt);
+    let user_config = resolved_cfg_path
+        .as_ref()
+        .and_then(|path| match config::UserConfig::load(path) {
             Ok(cfg) => {
                 info!(config = %path, "loaded user config");
                 Some(cfg)
@@ -263,12 +265,21 @@ async fn handle_api(
     let sm_store = crate::app::statemachine::StateMachineStore::default_for_home();
 
     info!(socket = %bus_socket, agent = %agent_name, "starting bus API handler");
+    // Standalone `deskd bus api` does not own a config_reload watcher, so we
+    // hand it a fresh detached ReloadState. The `reload_config` RPC still
+    // validates YAML and records last_reload_error, but the watcher trigger
+    // is a no-op because nothing is waiting. Callers that want full hot-reload
+    // semantics must use `deskd serve`.
+    let detached_reload_state = crate::app::reload_state::ReloadState::new();
+    let cfg_path_for_reload = resolved_cfg_path.unwrap_or_default();
     crate::app::bus_api::run(
         &bus_socket,
         &task_store,
         &sm_store,
         user_config.as_ref(),
         &agent_name,
+        &cfg_path_for_reload,
+        detached_reload_state,
     )
     .await
 }

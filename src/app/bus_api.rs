@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::app::mcp_service;
+use crate::app::reload_state::ReloadState;
 use crate::config::UserConfig;
 use crate::ports::bus::MessageBus;
 use crate::ports::store::{StateMachineRepository, TaskRepository};
@@ -39,12 +40,21 @@ const API_CLIENT_NAME: &str = "deskd:api";
 /// topics, and dispatches incoming requests to the appropriate handler.
 ///
 /// This function runs forever (until the bus connection drops).
+///
+/// `agent_cfg_path` is the path to this agent's `deskd.yaml` — used by the
+/// `reload_config` RPC to know which file to re-parse (#474).
+/// `reload_state` is the shared per-agent reload state; the `reload_config`
+/// RPC fires its `Notify` to wake the watcher, and the `bus_status` RPC
+/// surfaces `last_reload_at` for observability.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     bus_socket: &str,
     task_store: &(dyn TaskRepository + Send + Sync),
     sm_store: &(dyn StateMachineRepository + Send + Sync),
     user_config: Option<&UserConfig>,
     agent_name: &str,
+    agent_cfg_path: &str,
+    reload_state: ReloadState,
 ) -> Result<()> {
     let bus = crate::app::bus::connect_bus(bus_socket).await?;
     bus.register(
@@ -84,6 +94,8 @@ pub async fn run(
             sm_store,
             user_config,
             agent_name,
+            agent_cfg_path,
+            &reload_state,
         )
         .await;
 
@@ -116,6 +128,7 @@ pub async fn run(
 }
 
 /// Dispatch a method call to the appropriate handler.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     method: &str,
     params: &Value,
@@ -124,6 +137,8 @@ async fn dispatch(
     sm_store: &(dyn StateMachineRepository + Send + Sync),
     user_config: Option<&UserConfig>,
     agent_name: &str,
+    agent_cfg_path: &str,
+    reload_state: &ReloadState,
 ) -> Result<Value> {
     match method {
         // ── Queries ─────────────────────────────────────────────────────
@@ -140,7 +155,7 @@ async fn dispatch(
         "inbox_list" => handle_inbox_list(agent_name, user_config),
         "inbox_read" => handle_inbox_read(params, agent_name, user_config),
         "inbox_search" => handle_inbox_search(params, agent_name, user_config),
-        "bus_status" => handle_bus_status(bus_socket).await,
+        "bus_status" => handle_bus_status(bus_socket, reload_state).await,
         "room_list" => handle_room_list().await,
         "room_children" => handle_room_children(params),
         "context_stats" => handle_context_stats(params, bus_socket).await,
@@ -161,6 +176,9 @@ async fn dispatch(
         "schedule_remove" => handle_schedule_remove(params, user_config, agent_name),
         "agent_restart" => handle_agent_restart(params, bus_socket, agent_name).await,
         "agent_compress" => handle_agent_compress(params, bus_socket, agent_name).await,
+        "reload_config" => {
+            handle_reload_config(params, agent_cfg_path, agent_name, reload_state).await
+        }
 
         _ => bail!("unknown method: {}", method),
     }
@@ -466,14 +484,17 @@ fn handle_inbox_search(
     Ok(json!(results))
 }
 
-async fn handle_bus_status(bus_socket: &str) -> Result<Value> {
+async fn handle_bus_status(bus_socket: &str, reload_state: &ReloadState) -> Result<Value> {
     let clients = crate::app::serve::query_live_agents(bus_socket)
         .await
         .unwrap_or_default();
     let client_list: Vec<&str> = clients.iter().map(|s| s.as_str()).collect();
+    let snap = reload_state.snapshot().await;
     Ok(json!({
         "socket": bus_socket,
         "clients": client_list,
+        "last_reload_at": snap.last_reload_at.map(|t| t.to_rfc3339()),
+        "last_reload_error": snap.last_reload_error,
     }))
 }
 
@@ -1050,6 +1071,74 @@ async fn handle_agent_compress(params: &Value, bus_socket: &str, caller: &str) -
     }))
 }
 
+/// `reload_config` RPC handler — implements the daemon side of `deskd reload` (#474).
+///
+/// Validates the YAML at the daemon's own `cfg_path` (the path the agent was
+/// launched against), and on success fires `reload_state.trigger()` to wake
+/// the config_reload watcher. The watcher then performs the actual changeset
+/// classification, swap, and `last_reload_at` recording — see
+/// `config_reload::watch_and_reload`.
+///
+/// The handler intentionally does NOT honour any caller-supplied path —
+/// previously `params.path` would be validated but the watcher reloaded a
+/// different file, producing a misleading `validated: true` response (see
+/// #478 review). `--config <path>` on the CLI is now a client-side assertion
+/// only: the CLI compares the operator's path against the agent's recorded
+/// `config_path` in `ServeState` and fails before issuing the RPC on
+/// mismatch. Any `params.path` sent by an older client is silently ignored.
+///
+/// On parse failure: records the error in `ReloadState`, returns the error
+/// to the caller, and leaves the running daemon on its previous config. The
+/// watcher is NOT triggered.
+///
+/// Note: "validated" means "parsed at RPC time," not "applied" — the watcher
+/// re-parses the file on its own tick (TOCTOU window). Safety is preserved
+/// on subsequent parse failure (old config kept), but the RPC's success
+/// response is a soft guarantee.
+///
+/// Returns `{validated: true, path: "...", triggered: true}` on success,
+/// where `path` is always the daemon's own `cfg_path`.
+async fn handle_reload_config(
+    _params: &Value,
+    default_cfg_path: &str,
+    agent_name: &str,
+    reload_state: &ReloadState,
+) -> Result<Value> {
+    // The daemon always reloads its own config path. Any caller-supplied
+    // path is ignored — `--config` is verified client-side in the CLI.
+    let path = default_cfg_path.to_string();
+
+    // Validate by parsing. If this fails, the daemon stays on its previous
+    // config — we never trigger the watcher.
+    match UserConfig::load(&path) {
+        Ok(_) => {
+            reload_state.trigger();
+            info!(
+                agent = %agent_name,
+                path = %path,
+                "reload_config RPC accepted, watcher triggered"
+            );
+            Ok(json!({
+                "validated": true,
+                "triggered": true,
+                "path": path,
+                "agent": agent_name,
+            }))
+        }
+        Err(e) => {
+            let err = format!("failed to parse {}: {}", path, e);
+            reload_state.record_failure(err.clone()).await;
+            warn!(
+                agent = %agent_name,
+                path = %path,
+                error = %e,
+                "reload_config RPC rejected — malformed config, daemon unchanged"
+            );
+            bail!("{}", err)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,6 +1151,7 @@ mod tests {
         let sm_store = crate::app::statemachine::StateMachineStore::new(std::path::PathBuf::from(
             "/tmp/bus_api_test_sm",
         ));
+        let reload_state = ReloadState::new();
 
         let result = rt.block_on(dispatch(
             "nonexistent_method",
@@ -1071,10 +1161,111 @@ mod tests {
             &sm_store,
             None,
             "test",
+            "/tmp/nonexistent.yaml",
+            &reload_state,
         ));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown method"));
+    }
+
+    #[tokio::test]
+    async fn test_reload_config_rejects_malformed_yaml() {
+        // Malformed YAML → returns error, records failure, does NOT trigger.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("deskd.yaml");
+        std::fs::write(&cfg_path, "this is: : not valid yaml :::\n").unwrap();
+
+        let reload_state = ReloadState::new();
+        let result = handle_reload_config(
+            &json!({}),
+            cfg_path.to_str().unwrap(),
+            "test-agent",
+            &reload_state,
+        )
+        .await;
+
+        assert!(result.is_err(), "malformed YAML should reject");
+        let snap = reload_state.snapshot().await;
+        assert!(snap.last_reload_error.is_some());
+        assert!(
+            snap.last_reload_at.is_none(),
+            "failure must not set last_reload_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reload_config_accepts_valid_yaml_and_triggers() {
+        // Valid YAML → returns success, fires the watcher notification.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("deskd.yaml");
+        std::fs::write(
+            &cfg_path,
+            "model: claude-sonnet-4-6\nsystem_prompt: hello\n",
+        )
+        .unwrap();
+
+        let reload_state = ReloadState::new();
+        let waiter = {
+            let state = reload_state.clone();
+            tokio::spawn(async move {
+                state.wait_for_trigger().await;
+            })
+        };
+        // Give the spawned waiter a chance to register on the Notify.
+        tokio::task::yield_now().await;
+
+        let result = handle_reload_config(
+            &json!({}),
+            cfg_path.to_str().unwrap(),
+            "test-agent",
+            &reload_state,
+        )
+        .await;
+
+        assert!(result.is_ok(), "valid YAML should succeed");
+        let v = result.unwrap();
+        assert_eq!(v["validated"], json!(true));
+        assert_eq!(v["triggered"], json!(true));
+
+        // The watcher Notify must fire.
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should resolve after trigger")
+            .expect("waiter task panicked");
+    }
+
+    #[tokio::test]
+    async fn test_reload_config_ignores_path_param() {
+        // params.path is intentionally ignored — the daemon always reloads
+        // its own default_cfg_path (see #478 review). Caller-supplied paths
+        // from older clients are silently dropped; verification happens in
+        // the CLI before the RPC is issued.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("daemon.yaml");
+        std::fs::write(&real, "model: claude-sonnet-4-6\n").unwrap();
+
+        let reload_state = ReloadState::new();
+        let result = handle_reload_config(
+            // Caller tries to override with a path that *does not exist*.
+            &json!({"path": "/tmp/operator-supplied-bogus.yaml"}),
+            // Daemon's actual path is `real` — valid.
+            real.to_str().unwrap(),
+            "test-agent",
+            &reload_state,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "handler must use default_cfg_path and ignore params.path; got {:?}",
+            result.err()
+        );
+        let v = result.unwrap();
+        assert_eq!(
+            v["path"],
+            json!(real.to_str().unwrap()),
+            "response should report the daemon's own path, not the caller's override"
+        );
     }
 
     #[test]

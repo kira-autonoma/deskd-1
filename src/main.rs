@@ -111,6 +111,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Restart { config } => {
             commands::restart::handle(config).await?;
         }
+        Commands::Reload {
+            config,
+            agent,
+            socket,
+        } => {
+            commands::reload::handle(config, agent, socket).await?;
+        }
         Commands::Upgrade { install_dir } => {
             commands::upgrade::handle(install_dir).await?;
         }
