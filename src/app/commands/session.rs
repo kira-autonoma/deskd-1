@@ -447,20 +447,7 @@ fn run_remote_log_tail(
     agent: &str,
     log_dir_override: Option<&str>,
 ) -> Result<()> {
-    let log_path = match log_dir_override {
-        Some(dir) => format!("{}/{}.log", dir.trim_end_matches('/'), agent),
-        None => format!("{}/{}.log", DEFAULT_SYSTEM_LOG_DIR, agent),
-    };
-    // Try the system path first, fall back to the XDG state path. The
-    // remote shell does the existence check so we don't need a
-    // round-trip.
-    let xdg_path = format!("$HOME/.local/state/deskd/sessions/{}.log", agent);
-    let remote_cmd = format!(
-        "if [ -f {sys} ]; then tail -F {sys}; elif [ -f {xdg} ]; then tail -F {xdg}; else echo 'no log for {a} at {sys} or {xdg}' >&2; exit 1; fi",
-        sys = shell_escape(&log_path),
-        xdg = shell_escape(&xdg_path),
-        a = agent,
-    );
+    let remote_cmd = build_remote_log_cmd(agent, log_dir_override);
     let mut args: Vec<String> = Vec::new();
     args.push("-T".to_string());
     args.push("-o".to_string());
@@ -471,6 +458,28 @@ fn run_remote_log_tail(
     args.push(entry.host.clone());
     args.push(remote_cmd);
     exec_replace("ssh", &args)
+}
+
+/// Build the remote shell command for `session log` over SSH.
+///
+/// All operator-supplied strings are passed through `shell_escape` so a
+/// hostile agent name (e.g. `foo'; bad; echo '`) cannot break out of the
+/// single-quoted echo and execute commands on the remote (#480).
+fn build_remote_log_cmd(agent: &str, log_dir_override: Option<&str>) -> String {
+    let log_path = match log_dir_override {
+        Some(dir) => format!("{}/{}.log", dir.trim_end_matches('/'), agent),
+        None => format!("{}/{}.log", DEFAULT_SYSTEM_LOG_DIR, agent),
+    };
+    // Try the system path first, fall back to the XDG state path. The
+    // remote shell does the existence check so we don't need a
+    // round-trip.
+    let xdg_path = format!("$HOME/.local/state/deskd/sessions/{}.log", agent);
+    format!(
+        "if [ -f {sys} ]; then tail -F {sys}; elif [ -f {xdg} ]; then tail -F {xdg}; else echo 'no log for {a} at {sys} or {xdg}' >&2; exit 1; fi",
+        sys = shell_escape(&log_path),
+        xdg = shell_escape(&xdg_path),
+        a = shell_escape(agent),
+    )
 }
 
 /// POSIX-shell single-quote escape — same trick as `tmux_launcher`. We
@@ -605,5 +614,48 @@ mod tests {
     fn short_msg_keeps_short_strings_unchanged() {
         let out = short_msg("short", 32);
         assert_eq!(out, "short");
+    }
+
+    #[test]
+    fn build_remote_log_cmd_normal_agent_quotes_name() {
+        // Sanity: the agent name is shell-escaped in the error echo.
+        let cmd = build_remote_log_cmd("kira", None);
+        assert!(
+            cmd.contains("'kira'"),
+            "expected shell-escaped agent in cmd; got: {}",
+            cmd
+        );
+        // The fall-through paths are shell-escaped too.
+        assert!(
+            cmd.contains("/var/log/deskd/sessions/kira.log"),
+            "expected log path; got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn build_remote_log_cmd_escapes_malicious_agent_name() {
+        // #480: a hostile agent name with embedded single quotes must not
+        // break out of the error echo's single-quoted string. The format
+        // string previously substituted {a} as raw, allowing
+        // `foo'; bad_cmd; echo '` to execute on the remote.
+        let malicious = "alpha'; pwned; echo '";
+        let cmd = build_remote_log_cmd(malicious, None);
+
+        // The substituted slot now holds the shell-escaped form.
+        let escaped = shell_escape(malicious);
+        assert!(
+            cmd.contains(&escaped),
+            "expected escaped agent in cmd; got cmd={}",
+            cmd
+        );
+
+        // The unsafe pre-fix shape `for alpha';` must NOT appear: that's
+        // the literal pattern where the unquoted agent broke out before.
+        assert!(
+            !cmd.contains("for alpha';"),
+            "agent name must not appear unquoted right after 'for '; got: {}",
+            cmd
+        );
     }
 }
