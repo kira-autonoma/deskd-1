@@ -29,10 +29,36 @@ steps:
     prompt: |
       You are reviewing PR #{pr_number} in {repo}.
 
-      Based on CI status and the diff, decide:
-      1. Is CI passing? (ignore archlint failures — only cargo check/test/clippy matter)
-      2. Is the code quality acceptable? Any bugs, security issues, or bad patterns?
-      3. Is it mergeable (no conflicts)?
+      Repo {repo} is PUBLIC. Every committed line is world-readable forever.
+
+      Walk these checks in order; ANY single failure flips action to "comment":
+
+      1. **CI** — passing? (ignore archlint failures; only cargo check/test/clippy are hard gates.)
+
+      2. **Functional / code quality** — bugs, broken invariants, dead code, bad patterns,
+         missing tests for new behaviour.
+
+      3. **Security (hard stop)** — read the diff explicitly for:
+         - hardcoded secrets / tokens / API keys / private URLs / .env content (in code, tests, fixtures)
+         - shell / SQL / YAML / path-traversal injection from untrusted input
+         - new endpoints without auth, missing CSRF, weak session cookie attrs
+         - untrusted deserialization without size/depth limits
+         - new outbound network calls (data exfil surface), new privileged FS writes
+         - rolled-your-own crypto, weak primitives (MD5/SHA1 for security, ECB, predictable IV/nonce)
+         - suspicious / typosquat dependencies
+
+      4. **Public-repo sensitivity (hard stop)** — read the diff explicitly for leaks of:
+         - personal context about the repo owner (family, finances, business, health, exact location,
+           schedule, private contacts)
+         - internal infra: VPS public IPs, Tailscale internal IPs (100.x.x.x), Tailscale hostnames,
+           internal domains, SSH keys/fingerprints, bot tokens, Telegram chat IDs (-100…), webhook URLs
+         - references to internal ecosystem names / governance / sibling private repos
+         - other agents' identities, internal agent prompts, named persona refs
+         - TODO comments naming private people / private context
+
+      5. **Mergeable** — no conflicts with main.
+
+      If steps 3 or 4 trigger, list the SPECIFIC offending lines or symbols in `issues` — don't be vague.
 
       Respond with JSON:
       ```json
@@ -40,7 +66,7 @@ steps:
         "action": "merge" or "comment",
         "branch": "the head branch name",
         "title": "PR title for commit message",
-        "issues": ["list of issues if action is comment, empty if merge"]
+        "issues": ["list of issues if action is comment, empty if merge — be specific, cite file:line"]
       }
       ```
 
