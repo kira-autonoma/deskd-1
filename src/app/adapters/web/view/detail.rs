@@ -71,10 +71,15 @@ pub fn detail_meta(detail: &AgentDetail) -> String {
         .home_dir_bytes
         .map(format_bytes)
         .unwrap_or_else(em_dash);
-    let context = match (
-        detail.summary.context_tokens,
-        detail.summary.context_threshold,
-    ) {
+    // #483: the denominator is the model's hard context_limit, NOT the
+    // auto-compact threshold. Fall back to threshold only when limit is
+    // missing (older payloads). The compaction strategy (threshold) is
+    // surfaced separately by the `compaction` field a few lines below.
+    let context_limit = detail
+        .summary
+        .context_limit
+        .or(detail.summary.context_threshold);
+    let context = match (detail.summary.context_tokens, context_limit) {
         (Some(used), Some(limit)) if limit > 0 => format!(
             "{} / {}",
             html_escape(&format!("{}k", used / 1_000)),
@@ -356,6 +361,7 @@ mod tests {
                 last_activity: None,
                 context_tokens: Some(120_000),
                 context_threshold: Some(300_000),
+                context_limit: Some(1_000_000),
                 home_dir_bytes: Some(412 * 1024 * 1024),
                 current_task: None,
                 task_running_for: None,
@@ -388,7 +394,10 @@ mod tests {
         assert!(html.contains("claude-opus-4-7"));
         assert!(html.contains("/home/dev"));
         assert!(html.contains("412 MiB"));
-        assert!(html.contains("120k / 300k"));
+        // #483: denominator is the hard context_limit (1M for Sonnet 4.6),
+        // not the soft auto-compact threshold (300k). The threshold is
+        // still surfaced by the `compaction` field below.
+        assert!(html.contains("120k / 1000k"));
         assert!(html.contains("compaction: auto @ 80%"));
     }
 

@@ -42,8 +42,14 @@ pub struct AgentSummary {
     pub last_activity: Option<DateTime<Utc>>,
     /// Tokens currently pinned in the session context window.
     pub context_tokens: Option<u64>,
-    /// Auto-compact threshold (per the resolved agent config).
+    /// Auto-compact threshold — the **soft** trigger at which deskd starts
+    /// compacting the session. Rendered as a marker on the progress bar
+    /// (not the denominator). `None` when no `SessionContext` is available.
     pub context_threshold: Option<u64>,
+    /// Model's actual context window in tokens (e.g. 1M for Sonnet 4.6).
+    /// This is the **hard** ceiling and is used as the progress-bar
+    /// denominator (#483). `None` when no `SessionContext` is available.
+    pub context_limit: Option<u64>,
     /// Home-directory size from the #446 disk cache. `None` until that lands.
     pub home_dir_bytes: Option<u64>,
     /// Truncated text of the task currently being processed, if any.
@@ -217,9 +223,13 @@ fn summarise(
     home_dir_bytes: Option<u64>,
 ) -> AgentSummary {
     let last_activity = latest_task_ts(&state.config.name);
-    let (context_tokens, context_threshold) = match ctx {
-        Some(c) => (c.context_tokens, Some(c.auto_compact_threshold)),
-        None => (None, None),
+    let (context_tokens, context_threshold, context_limit) = match ctx {
+        Some(c) => (
+            c.context_tokens,
+            Some(c.auto_compact_threshold),
+            Some(c.context_limit),
+        ),
+        None => (None, None, None),
     };
     let current_task = if state.current_task.is_empty() {
         None
@@ -244,6 +254,7 @@ fn summarise(
         last_activity,
         context_tokens,
         context_threshold,
+        context_limit,
         home_dir_bytes,
         current_task,
         task_running_for,

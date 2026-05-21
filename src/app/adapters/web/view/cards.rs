@@ -117,26 +117,46 @@ pub fn agents_section_with_disk(
 }
 
 fn render_context(summary: &AgentSummary) -> String {
-    match (summary.context_tokens, summary.context_threshold) {
-        (Some(tokens), Some(threshold)) if threshold > 0 => {
-            let pct = ((tokens as f64 / threshold as f64) * 100.0).clamp(0.0, 999.9);
+    // #483: the progress-bar denominator is the model's hard context_limit,
+    // NOT the auto-compact threshold. The threshold is rendered as a small
+    // annotation so the "compact-soon" signal isn't lost. Fall back to the
+    // threshold ONLY when context_limit is missing (older payloads).
+    let limit = summary.context_limit.or(summary.context_threshold);
+    match (summary.context_tokens, limit) {
+        (Some(tokens), Some(limit)) if limit > 0 => {
+            let pct = ((tokens as f64 / limit as f64) * 100.0).clamp(0.0, 999.9);
             let bar_pct = pct.min(100.0);
             let bucket = nearest_bucket_class(bar_pct);
             let used = format_tokens_compact(tokens);
-            let limit = format_tokens_compact(threshold);
+            let limit_str = format_tokens_compact(limit);
             // No inline `style=` attribute: width comes from the bucket
             // class (`.ctx-bar__fill--w-0` … `--w-100` in 10% steps) so
             // the strict CSP from #443 holds. See #450 review.
+            //
+            // Auto-compact threshold annotation: only rendered when both
+            // threshold and limit are known and the threshold isn't the
+            // limit itself (avoid noise).
+            let compact_marker = match summary.context_threshold {
+                Some(threshold) if threshold > 0 && threshold < limit => {
+                    let t = format_tokens_compact(threshold);
+                    format!(
+                        r#" <small class="ctx-compact-at">compact at {t}</small>"#,
+                        t = html_escape(&t),
+                    )
+                }
+                _ => String::new(),
+            };
             format!(
                 r#"<dt>context</dt><dd>
-      <span class="ctx-numbers">{used} / {limit}</span>
+      <span class="ctx-numbers">{used} / {limit_str}</span>
       <span class="ctx-bar"><span class="ctx-bar__fill ctx-bar__fill--w-{bucket}"></span></span>
-      <span class="ctx-pct">{pct:.0}%</span>
+      <span class="ctx-pct">{pct:.0}%</span>{compact_marker}
     </dd>"#,
                 used = html_escape(&used),
-                limit = html_escape(&limit),
+                limit_str = html_escape(&limit_str),
                 bucket = bucket,
                 pct = pct,
+                compact_marker = compact_marker,
             )
         }
         _ => format!("<dt>context</dt><dd>{}</dd>", em_dash()),
@@ -183,11 +203,23 @@ fn em_dash() -> String {
     "<span class=\"em\">—</span>".to_string()
 }
 
-/// `123` → `123`, `1500` → `1.5k`, `300_000` → `300k`. Matches the
-/// formatting used by `/context` so dashboard and Telegram report the same.
+/// `123` → `123`, `1500` → `1.5k`, `300_000` → `300k`, `1_000_000` → `1M`.
+/// Matches the formatting used by `/context` so dashboard and Telegram
+/// report the same.
 fn format_tokens_compact(n: u64) -> String {
     if n < 1_000 {
         return n.to_string();
+    }
+    if n >= 1_000_000 {
+        let m = n as f64 / 1_000_000.0;
+        if m >= 10.0 {
+            return format!("{}M", m.round() as u64);
+        }
+        let rounded = (m * 10.0).round() / 10.0;
+        if (rounded - rounded.round()).abs() < f64::EPSILON {
+            return format!("{}M", rounded as u64);
+        }
+        return format!("{:.1}M", rounded);
     }
     let k = n as f64 / 1_000.0;
     if k >= 10.0 {
@@ -306,6 +338,7 @@ mod tests {
             last_activity: None,
             context_tokens: None,
             context_threshold: None,
+            context_limit: None,
             home_dir_bytes: None,
             current_task: None,
             task_running_for: None,
@@ -337,14 +370,67 @@ mod tests {
 
     #[test]
     fn card_renders_context_progress_when_data_available() {
+        // #483: denominator is the model context_limit, not the auto-compact
+        // threshold. With limit=1M and tokens=120k we expect ~12%, not 40%.
         let mut s = summary("kira");
         s.context_tokens = Some(120_000);
         s.context_threshold = Some(300_000);
+        s.context_limit = Some(1_000_000);
         let html = agent_card(&s);
-        assert!(html.contains("120k / 300k"));
-        // 120/300 = 40% → bucket class --w-40 (no inline `style=` attr).
-        assert!(html.contains("ctx-bar__fill--w-40"));
+        assert!(html.contains("120k / 1M"), "got: {}", html);
+        // 120/1000 = 12% → bucket class --w-10 (no inline `style=` attr).
+        assert!(html.contains("ctx-bar__fill--w-10"));
         assert!(!html.contains("style=\"width"));
+        assert!(html.contains("12%"));
+        // The compact-at threshold is still surfaced as a marker.
+        assert!(html.contains("compact at 300k"), "got: {}", html);
+    }
+
+    #[test]
+    fn card_context_indicator_never_exceeds_100_percent_when_above_threshold() {
+        // #483 regression: when tokens cross the auto-compact threshold but
+        // are below the model limit, the bar must clamp to ≤100% AND the
+        // pct should reflect (tokens / limit), not (tokens / threshold).
+        let mut s = summary("dev");
+        s.context_tokens = Some(583_000);
+        s.context_threshold = Some(300_000);
+        s.context_limit = Some(1_000_000);
+        let html = agent_card(&s);
+        // 583/1000 = 58.3% — bucket bar fills at 60%, pct shows 58%.
+        assert!(html.contains("583k / 1M"), "got: {}", html);
+        assert!(html.contains("ctx-bar__fill--w-60"));
+        assert!(html.contains("58%"));
+        // The dangerous >100% number from the bug report must NOT appear.
+        assert!(
+            !html.contains("194%"),
+            "pre-fix pct must not appear; got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn card_context_indicator_omits_compact_marker_when_threshold_equals_limit() {
+        // If threshold == limit (no soft trigger configured), don't render
+        // a redundant "compact at" annotation.
+        let mut s = summary("kira");
+        s.context_tokens = Some(500_000);
+        s.context_threshold = Some(1_000_000);
+        s.context_limit = Some(1_000_000);
+        let html = agent_card(&s);
+        assert!(!html.contains("compact at"), "got: {}", html);
+    }
+
+    #[test]
+    fn card_context_falls_back_to_threshold_when_limit_missing() {
+        // Backward-compat: older SessionContext payloads without limit
+        // should still render something sensible (use threshold as
+        // denominator like before).
+        let mut s = summary("legacy");
+        s.context_tokens = Some(120_000);
+        s.context_threshold = Some(300_000);
+        s.context_limit = None;
+        let html = agent_card(&s);
+        assert!(html.contains("120k / 300k"), "got: {}", html);
         assert!(html.contains("40%"));
     }
 

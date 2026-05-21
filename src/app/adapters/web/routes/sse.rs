@@ -74,11 +74,16 @@ pub struct StatusEvent {
 }
 
 /// JSON payload for an `agent.context` SSE event.
+///
+/// `limit` is the model's hard context window (the bar denominator per
+/// #483). `threshold` is the soft auto-compact trigger, rendered as a
+/// secondary marker by the client.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextEvent {
     pub agent: String,
     pub tokens: u64,
     pub threshold: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// JSON payload for an `agent.compacted` SSE event.
@@ -293,6 +298,7 @@ pub fn diff_to_events(prev: &HashMap<String, AgentSummary>, curr: &[AgentSummary
                     agent: s.name.clone(),
                     tokens,
                     threshold: s.context_threshold,
+                    limit: s.context_limit,
                 };
                 if let Ok(ev) = Event::default().event("agent.context").json_data(&payload) {
                     out.push(ev);
@@ -364,6 +370,7 @@ mod tests {
             last_activity: None,
             context_tokens: tokens,
             context_threshold: Some(300_000),
+            context_limit: Some(1_000_000),
             home_dir_bytes: None,
             current_task: None,
             task_running_for: None,
