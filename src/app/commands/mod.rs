@@ -11,6 +11,7 @@ pub mod reload;
 pub mod remind;
 pub mod restart;
 pub mod schedule;
+pub mod session;
 pub mod sm;
 pub mod status;
 pub mod task;

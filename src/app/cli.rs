@@ -209,6 +209,32 @@ pub enum Commands {
         #[arg(long)]
         socket: Option<String>,
     },
+    /// Discover and attach to deskd-managed tmux sessions across the
+    /// local host + remotes from `~/.deskd/config.yaml` (#453).
+    ///
+    /// Sessions are named `deskd-<agent>` by the launcher (#452).
+    /// Operator config lives at `~/.deskd/config.yaml`:
+    ///
+    /// ```yaml
+    /// remotes:
+    ///   vps:
+    ///     host: root@vps.example.com
+    ///     # ssh_options: ["-i", "~/.ssh/vps_id"]    # optional
+    /// ```
+    ///
+    /// Examples:
+    ///   deskd session list                          # local + all remotes
+    ///   deskd session list --remote vps             # only the vps remote
+    ///   deskd session list --local                  # local only
+    ///   deskd session list --json                   # machine-readable output
+    ///   deskd session attach kira                   # local first, else lone remote
+    ///   deskd session attach kira --remote vps      # force remote
+    ///   deskd session attach kira --read-only       # observer mode (tmux -r)
+    ///   deskd session log kira                      # tail the session log
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Schedule a one-shot reminder for an agent.
     ///
     /// Writes a RemindDef JSON to ~/.deskd/reminders/<uuid>.json.
@@ -683,6 +709,60 @@ pub enum BusAction {
         /// Client name to register on the bus (default: deskd-cli-subscribe).
         #[arg(long, default_value = "deskd-cli-subscribe")]
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionAction {
+    /// Show all deskd-* tmux sessions across local + configured
+    /// remotes in a table.
+    List {
+        /// Restrict to a single named remote from `~/.deskd/config.yaml`.
+        #[arg(long)]
+        remote: Option<String>,
+        /// Skip SSH; show local tmux sessions only. Mutually exclusive
+        /// with --remote.
+        #[arg(long, default_value = "false", conflicts_with = "remote")]
+        local: bool,
+        /// Emit machine-readable JSON instead of the human table.
+        #[arg(long, default_value = "false")]
+        json: bool,
+    },
+    /// Attach to an agent's tmux session.
+    ///
+    /// Without `--remote`, prefers a local session if one exists; if
+    /// only a remote session matches, attaches there silently. A
+    /// collision (local + remote both have `deskd-<agent>`) prefers
+    /// local and prints a one-line stderr warning.
+    Attach {
+        /// Agent name (the launcher names sessions `deskd-<agent>`).
+        agent: String,
+        /// Force the named remote — bypasses discovery.
+        #[arg(long)]
+        remote: Option<String>,
+        /// Pass `-r` to tmux for an observer / no-input attach. Requires
+        /// tmux >= 2.6 (older versions had read-only bypasses).
+        #[arg(long = "read-only", short = 'r', default_value = "false")]
+        read_only: bool,
+        /// Open a new window in the user's current tmux session
+        /// instead of replacing it. Requires running inside tmux
+        /// already (TMUX env set).
+        #[arg(long = "new-window", default_value = "false")]
+        new_window: bool,
+    },
+    /// `tail -F` the agent's captured session log (local or remote).
+    Log {
+        /// Agent name.
+        agent: String,
+        /// Force the named remote. Without it, tries local first and
+        /// falls back to discovery when no local log exists.
+        #[arg(long)]
+        remote: Option<String>,
+        /// Override the log directory (default
+        /// `/var/log/deskd/sessions`, falling back to
+        /// `~/.local/state/deskd/sessions`).
+        #[arg(long = "log-dir")]
+        log_dir: Option<String>,
     },
 }
 

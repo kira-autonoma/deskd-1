@@ -131,6 +131,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Context { format } => {
             commands::context::run(&format).await?;
         }
+        Commands::Session { action } => {
+            commands::session::handle(action).await?;
+        }
     }
 
     Ok(())
