@@ -37,9 +37,11 @@ pub fn login_page(csrf: &str) -> String {
 /// so the strict CSP from #443 (`script-src 'self'; style-src 'self'`)
 /// holds without permitting inline `<style>` elements or `style=`
 /// attributes.
+#[allow(clippy::too_many_arguments)]
 pub fn dashboard_page(
     telegram_id: i64,
     csrf: &str,
+    chart_block_html: &str,
     refresh_form_html: &str,
     vps_strip_html: &str,
     agents_section_html: &str,
@@ -65,6 +67,7 @@ pub fn dashboard_page(
   </form>
 </header>
 <main>
+  {chart_block_html}
   <section hx-ext="sse" sse-connect="/events" sse-swap="vps-strip" id="vps-strip-wrap">
     {vps_strip_html}
   </section>
@@ -75,6 +78,7 @@ pub fn dashboard_page(
 </html>"#,
         telegram_id = telegram_id,
         csrf = html_escape(csrf),
+        chart_block_html = chart_block_html,
         refresh_form_html = refresh_form_html,
         vps_strip_html = vps_strip_html,
         agents_section_html = agents_section_html,
@@ -307,6 +311,7 @@ mod tests {
         let html = dashboard_page(
             42,
             "csrf-1",
+            "<section class='chart-block'></section>",
             "<form></form>",
             "<section class='vps-strip'></section>",
             "<section></section>",
@@ -318,7 +323,7 @@ mod tests {
 
     #[test]
     fn dashboard_page_loads_vendored_htmx() {
-        let html = dashboard_page(1, "x", "", "", "");
+        let html = dashboard_page(1, "x", "", "", "", "");
         // Vendored under /static/ — never reach out to a CDN, keeps strict
         // CSP (script-src 'self') intact.
         assert!(html.contains(r#"src="/static/htmx.min.js""#));
@@ -329,7 +334,7 @@ mod tests {
     fn dashboard_page_links_external_stylesheet() {
         // CSP `style-src 'self'` forbids inline <style> blocks; the CSS is
         // served from /static/dashboard.css instead. See #450 review.
-        let html = dashboard_page(1, "x", "", "", "");
+        let html = dashboard_page(1, "x", "", "", "", "");
         assert!(
             html.contains(r#"<link rel="stylesheet" href="/static/dashboard.css">"#),
             "dashboard must link external stylesheet"
@@ -345,6 +350,7 @@ mod tests {
             7,
             "csrf-token",
             "",
+            "",
             "<section class='vps-strip'></section>",
             "<section></section>",
         );
@@ -358,7 +364,7 @@ mod tests {
     fn dashboard_page_includes_word_dashboard_for_smoke_tests() {
         // The existing #443 integration test asserts on the literal word
         // "dashboard" appearing in the HTML; preserve that.
-        let html = dashboard_page(1, "x", "", "", "");
+        let html = dashboard_page(1, "x", "", "", "", "");
         assert!(html.contains("dashboard"));
     }
 
@@ -367,8 +373,25 @@ mod tests {
         // #446: when the disk collector publishes `metrics.updated`, the
         // SSE stream emits a `vps-strip` named event so htmx swaps the
         // top-of-page strip without a polling loop.
-        let html = dashboard_page(1, "x", "", "<section class='vps-strip'></section>", "");
+        let html = dashboard_page(1, "x", "", "", "<section class='vps-strip'></section>", "");
         assert!(html.contains(r#"sse-swap="vps-strip""#));
+    }
+
+    #[test]
+    fn dashboard_page_renders_chart_block_above_vps_strip() {
+        // #484: chart block sits above the vps-strip in document order so
+        // the «overview» graph is the first thing visible on load.
+        let html = dashboard_page(
+            1,
+            "x",
+            "<section class='chart-block' id='dashboard-chart-block'>CHART</section>",
+            "",
+            "<section class='vps-strip'>STRIP</section>",
+            "",
+        );
+        let chart_idx = html.find("CHART").expect("chart block missing");
+        let strip_idx = html.find("STRIP").expect("strip missing");
+        assert!(chart_idx < strip_idx, "chart must precede vps strip");
     }
 
     #[test]

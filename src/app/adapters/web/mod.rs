@@ -18,6 +18,7 @@
 pub mod audit;
 pub mod auth;
 pub mod data;
+pub mod data_chart;
 pub mod data_cost;
 pub mod dispatch;
 pub mod middleware;
