@@ -4,10 +4,23 @@ use clap::{Parser, Subcommand};
 
 pub const DEFAULT_SOCKET: &str = "/tmp/deskd.sock";
 
+/// Plain semver string for the running binary.
+///
+/// Prefers `DESKD_VERSION` (injected by `build.rs` from `git describe --tags`)
+/// over `CARGO_PKG_VERSION` so the binary reports the correct version even if
+/// the release CI stamping step silently no-ops (see #492 — the original
+/// `perl ... /^\[package\]/../^\[/` range never matched). All runtime surfaces
+/// that need to advertise the version (panel, federation hello, MCP server
+/// info, ACP clientInfo) should call this rather than reading
+/// `CARGO_PKG_VERSION` directly so they stay consistent with `--version`.
+pub fn deskd_version() -> &'static str {
+    option_env!("DESKD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 pub fn version_string() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
-        let ver = option_env!("DESKD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        let ver = deskd_version();
         let hash = env!("GIT_HASH");
         if hash.is_empty() {
             ver.to_string()

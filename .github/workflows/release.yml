@@ -53,9 +53,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools perl
 
       # Stamp Cargo.toml from the tag name so the built binary reports the
-      # actual release semver via CARGO_PKG_VERSION (#482). Cargo.toml stays
-      # at 0.1.0 in-tree; the version is only injected at release-build time.
-      # `perl -pi -e` works on both GNU sed (Linux) and BSD sed (macOS) runners.
+      # actual release semver via CARGO_PKG_VERSION (#482, #492). Cargo.toml
+      # stays at 0.1.0 in-tree; the version is only injected at release-build
+      # time. `perl` works on both GNU and BSD runners.
+      #
+      # #492 root cause: the previous one-liner used perl's flip-flop range
+      # `/^\[package\]/../^\[/` to scope the substitution to the [package]
+      # section. The closing pattern `^\[` matched on the very same line as
+      # `^\[package\]`, so the range opened and closed on line 1 and the
+      # `version = "..."` line on line 3 was never inside the range. The
+      # substitution silently no-op'd, the file printed `version = "0.1.0"`
+      # after the step, and the panel kept reporting 0.1.0 in production —
+      # `--version` was masked by build.rs's git-describe fallback
+      # (DESKD_VERSION) which made the regression invisible at release time.
+      #
+      # The replacement below tracks `[package]` section membership
+      # explicitly, sets `$done = 1` on a successful substitution, and
+      # `exit 1`s from perl if the substitution did not fire. The follow-up
+      # bash `grep` is a belt-and-braces assertion against the resulting
+      # file in case the perl exit status is ever ignored.
       - name: Stamp version from tag
         shell: bash
         run: |
@@ -67,8 +83,22 @@ jobs:
             exit 1
           fi
           echo "Stamping Cargo.toml with version $VERSION"
-          perl -pi -e "s/^version = \".*\"/version = \"$VERSION\"/ if /^\\[package\\]/../^\\[/" Cargo.toml
+          VERSION="$VERSION" perl -i -pe '
+            BEGIN { our ($in_pkg, $done) = (0, 0) }
+            if (/^\[package\]/)  { $in_pkg = 1 }
+            elsif (/^\[/)        { $in_pkg = 0 }
+            if ($in_pkg && s/^version = ".*"/version = "$ENV{VERSION}"/) { $done = 1 }
+            END {
+              die "::error::stamp failed: no version line replaced under [package]\n"
+                unless $done
+            }
+          ' Cargo.toml
+          echo "Cargo.toml after stamping:"
           grep '^version' Cargo.toml
+          if ! grep -q "^version = \"$VERSION\"\$" Cargo.toml; then
+            echo "::error::Cargo.toml does not contain version = \"$VERSION\" after stamping"
+            exit 1
+          fi
 
       - name: Build (Linux musl)
         if: contains(matrix.target, 'musl')
@@ -77,6 +107,29 @@ jobs:
       - name: Build (macOS)
         if: contains(matrix.target, 'apple')
         run: cargo build --release --target ${{ matrix.target }}
+
+      # #492 regression guard: the built binary's `--version` must include
+      # the tag's semver. Catches both a broken Cargo.toml stamp and any
+      # future drift between `--version` and the panel (which now share
+      # `cli::deskd_version()`). We run this only on the Linux runner —
+      # macOS cross-compiled artifacts can't be executed on a Linux host,
+      # and stamping is target-independent so a single check covers all
+      # three artifacts.
+      - name: Verify built binary reports tag version
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          BIN="target/${{ matrix.target }}/release/deskd"
+          OUT=$("$BIN" --version)
+          echo "Binary reports: $OUT"
+          # Require an exact word-boundary match on the semver so 0.1.0
+          # would not accidentally pass when the tag is e.g. 0.1.0-rc1.
+          if ! echo "$OUT" | grep -Eq "(^|[^0-9.])${VERSION//./\\.}([^0-9.]|\$)"; then
+            echo "::error::binary --version output ('$OUT') does not contain tag version '$VERSION'"
+            exit 1
+          fi
 
       - name: Package
         run: |

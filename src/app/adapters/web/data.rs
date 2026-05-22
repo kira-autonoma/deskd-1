@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::app::agent;
+use crate::app::cli::deskd_version;
 use crate::app::context_size;
 use crate::app::metrics::DiskSnapshot;
 use crate::app::tasklog::{self, TaskLog};
@@ -62,7 +63,10 @@ pub struct AgentSummary {
 /// VPS-level overview shown above the agent list.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct VpsOverview {
-    /// `CARGO_PKG_VERSION` of this binary.
+    /// Semver of this binary, sourced from `cli::deskd_version()` so it
+    /// matches what `deskd --version` prints (`DESKD_VERSION` from the git
+    /// tag, falling back to `CARGO_PKG_VERSION`). Keeping these in sync is a
+    /// regression guard for #492.
     pub deskd_version: String,
     /// Process uptime since the dashboard handler first ran. The web adapter
     /// doesn't track its own start time today — we display deskd's uptime as
@@ -292,7 +296,7 @@ pub fn collect_vps_overview(disk: Option<&DiskSnapshot>) -> VpsOverview {
     let snap = disk.cloned().unwrap_or_default();
     let primary = snap.volumes.first();
     VpsOverview {
-        deskd_version: env!("CARGO_PKG_VERSION").to_string(),
+        deskd_version: deskd_version().to_string(),
         uptime: process_uptime(),
         disk_total_bytes: primary.and_then(|v| v.size_bytes),
         disk_free_bytes: primary.and_then(|v| v.avail_bytes),
@@ -446,7 +450,10 @@ mod tests {
     #[test]
     fn vps_overview_reports_pkg_version() {
         let v = collect_vps_overview(None);
-        assert_eq!(v.deskd_version, env!("CARGO_PKG_VERSION"));
+        // Panel must agree with `--version` — see #492 where the panel
+        // showed 0.1.0 because Cargo.toml never got stamped by the release
+        // CI. `cli::deskd_version()` is the single source of truth.
+        assert_eq!(v.deskd_version, deskd_version());
         assert!(v.disk_total_bytes.is_none());
     }
 
