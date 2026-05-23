@@ -92,7 +92,7 @@ steps:
             echo "FATAL: branch {branch} not found on origin or kira (post-fetch)" >&2; exit 1; \
           fi && \
           echo "PR branch resolved to: $REMOTE/{branch}" && \
-          git checkout -b _pr_{pr_number} $REMOTE/{branch} 2>&1 && \
+          git checkout -B _pr_{pr_number} $REMOTE/{branch} 2>&1 && \
           git rebase main 2>&1
 
   - id: quality_check
@@ -112,12 +112,16 @@ steps:
       - tool: bash
         args: "cd {work_dir} && ~/.cargo/bin/cargo fmt 2>&1"
 
-  # Single atomic step: merge → close PR → tag release.
-  # Chained with `set -euo pipefail` so any failure (e.g. push rejection,
-  # remote misconfiguration) aborts BEFORE the PR is closed or the tag is
-  # pushed. The graph engine's condition language can't gate on a prior
-  # step's exit code, so collapsing avoids the false-positive "merged"
-  # signal that #475 (and the #460 incident) reported.
+  # Single atomic step: merge via GH API → wait for merge → tag release.
+  # Uses `gh pr merge --squash` so the PR ends with state=closed AND
+  # merged=true (not the closed-not-merged state #475/#496 hit when we
+  # used `git merge --squash + push` directly, which bypasses GitHub's
+  # merge API).
+  #
+  # `--auto` enables auto-merge so transient CI flicker doesn't break the
+  # graph; it returns immediately after enabling, so we poll for the
+  # merged state before tagging. `set -euo pipefail` aborts on any
+  # failure before the tag step.
   - id: merge_close_tag
     depends_on: [fix_fmt]
     condition: "'merge' in action"
@@ -126,16 +130,25 @@ steps:
         args: |
           set -euo pipefail
           cd {work_dir}
-          # 1. Merge to origin/main. If this fails, nothing below runs.
+          # 1. Merge via GH API (squash + delete remote branch atomically).
+          gh pr merge {pr_number} --repo {repo} --squash --auto --delete-branch
+          # 2. Wait for the merge to actually complete (--auto returns immediately).
+          for i in $(seq 1 30); do
+            STATE=$(gh pr view {pr_number} --repo {repo} --json state -q .state)
+            if [ "$STATE" = "MERGED" ]; then break; fi
+            sleep 2
+          done
+          if [ "$STATE" != "MERGED" ]; then
+            echo "FATAL: PR {pr_number} did not reach MERGED state within 60s (last state: $STATE)" >&2
+            exit 1
+          fi
+          # 3. Sync local main with the new merge commit before tagging.
           git checkout main
-          git merge --squash _pr_{pr_number}
-          git commit -m "{title} (#{pr_number})"
-          git push origin main
-          # 2. Merge succeeded — safe to close the PR.
-          gh pr close {pr_number} --repo {repo} --comment 'Merged to main via skill graph.'
-          # 3. Local cleanup (non-fatal but useful).
-          git branch -D _pr_{pr_number}
-          # 4. Tag a patch release.
+          git fetch origin main
+          git reset --hard origin/main
+          # 4. Local cleanup of the temp branch (non-fatal).
+          git branch -D _pr_{pr_number} 2>/dev/null || true
+          # 5. Tag a patch release from the new main.
           LATEST=$(git tag -l 'v*' | sort -V | tail -1)
           MAJOR=$(echo $LATEST | cut -d. -f1)
           MINOR=$(echo $LATEST | cut -d. -f2)
