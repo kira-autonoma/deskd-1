@@ -7,6 +7,7 @@ use crate::app::adapters::federation;
 use crate::app::adapters::web;
 use crate::app::metrics;
 use crate::app::reload_state::ReloadState;
+use crate::app::transcript_extractor;
 use crate::app::{agent, alerts, bus, bus_api, config_reload, worker, workflow};
 use crate::config;
 use crate::infra::diag;
@@ -328,6 +329,32 @@ pub async fn serve(config_path: String) -> Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             collector_cancel.cancel();
         });
+    }
+
+    // ── Transcript extractor (#495) ──────────────────────────────────────
+    // Tails every agent's Claude Code session JSONL transcripts, derives
+    // structured events (session.start/end, limit.hit, model.switch), and
+    // publishes them to bus channel `events:transcript` + a daily-rotated
+    // event store at `~/.deskd/events/YYYY-MM-DD.jsonl`. No-backfill on
+    // first encounter; survives daemon restart via cursor persistence at
+    // `~/.deskd/extractor-cursors.json`. Foundation for tmux migration
+    // where deskd has no direct stdio to agents.
+    {
+        let cursors =
+            transcript_extractor::CursorStore::open(transcript_extractor::default_cursor_path());
+        let events =
+            transcript_extractor::EventStore::new(transcript_extractor::default_event_root());
+        let agents: Vec<(String, String, String)> = workspace
+            .agents
+            .iter()
+            .map(|a| (a.name.clone(), a.work_dir.clone(), a.bus_socket()))
+            .collect();
+        let n = agents.len();
+        transcript_extractor::spawn_for_workspace(agents, cursors, events);
+        info!(
+            agents = n,
+            "started transcript extractor (per-agent watchers)"
+        );
     }
 
     // ── Web control panel (#443) ──────────────────────────────────────────

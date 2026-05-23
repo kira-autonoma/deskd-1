@@ -45,6 +45,7 @@ pub mod task;
 pub mod tasklog;
 pub mod timeout_sweep;
 pub mod tmux_launcher;
+pub mod transcript_extractor;
 pub mod unified_inbox;
 pub mod worker;
 pub mod workflow;
