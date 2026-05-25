@@ -597,6 +597,15 @@ pub struct AgentDef {
     /// operator disconnects and receive MCP channel events (#451).
     #[serde(default)]
     pub launch_mode: ConfigLaunchMode,
+    /// Optional override for the agent's bus socket path.
+    /// Default: `{work_dir}/.deskd/bus.sock` (per-user home, isolated by
+    /// unix permissions of the home directory). Override useful when other
+    /// users on the same host need to reach this agent's bus — point at
+    /// `/tmp/deskd-<name>.sock` or similar world-traversable path so the
+    /// socket itself (already 0o777 per `bus_server.rs`) becomes reachable.
+    /// Used together with `cross_user_agents` in the sender's deskd.yaml.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bus_socket: Option<String>,
 }
 
 impl AgentDef {
@@ -611,8 +620,11 @@ impl AgentDef {
     }
 
     /// Derive the agent's bus socket path.
+    /// Honors `bus_socket` override if set, else `{work_dir}/.deskd/bus.sock`.
     pub fn bus_socket(&self) -> String {
-        agent_bus_socket(&self.work_dir)
+        self.bus_socket
+            .clone()
+            .unwrap_or_else(|| agent_bus_socket(&self.work_dir))
     }
 }
 
@@ -1587,6 +1599,7 @@ agents:
             container: None,
             runtime: ConfigAgentRuntime::default(),
             launch_mode: ConfigLaunchMode::default(),
+            bus_socket: None,
         };
         assert_eq!(def.bus_socket(), "/home/kira/.deskd/bus.sock");
         assert_eq!(def.config_path(), "/home/kira/deskd.yaml");
@@ -1606,6 +1619,7 @@ agents:
             container: None,
             runtime: ConfigAgentRuntime::default(),
             launch_mode: ConfigLaunchMode::default(),
+            bus_socket: None,
         };
         assert_eq!(def.config_path(), "/etc/agents/kira.yaml");
     }
@@ -1813,6 +1827,7 @@ telegram:
             container: None,
             runtime: Default::default(),
             launch_mode: Default::default(),
+            bus_socket: None,
         };
         assert_eq!(def.config_path(), "/home/family/deskd.yaml");
     }
@@ -1832,6 +1847,7 @@ telegram:
             container: None,
             runtime: Default::default(),
             launch_mode: Default::default(),
+            bus_socket: None,
         };
         assert_eq!(def.config_path(), "/home/family/deskd.yaml");
     }
