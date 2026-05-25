@@ -175,8 +175,17 @@ pub(crate) async fn call_send_message(
         }
     }
 
-    // Route to internal bus if target is a sub-agent, otherwise use parent bus.
-    let effective_socket = {
+    // Route to: cross-user bus (if target maps to a foreign user socket) →
+    // internal bus (if target is a sub-agent) → parent (own) bus.
+    let cross_user_socket = target.strip_prefix("agent:").and_then(|name| {
+        user_config
+            .and_then(|cfg| cfg.cross_user_agents.as_ref())
+            .and_then(|map| map.get(name))
+            .cloned()
+    });
+    let effective_socket = if let Some(s) = cross_user_socket {
+        s
+    } else {
         let ibus = internal_bus.lock().await;
         if let Some(ref ib) = *ibus {
             if ib.is_sub_agent_target(target) {

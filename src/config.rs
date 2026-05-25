@@ -824,6 +824,20 @@ pub struct UserConfig {
     /// detached tmux session named `deskd-<agent>`.
     #[serde(default)]
     pub launch_mode: ConfigLaunchMode,
+    /// Cross-user bus routing: maps `agent:<name>` targets to a foreign unix
+    /// socket path so `send_message` can reach a top-level agent owned by a
+    /// different unix user. Each value is a path to that agent's bus socket
+    /// (typically `/home/<user>/.deskd/bus.sock`). The remote socket and its
+    /// containing directory must be reachable by this agent's unix user
+    /// (permissions are not relaxed by deskd — see `bus_server.rs` which sets
+    /// the socket itself to `0o777`, but the containing dir is owned by the
+    /// remote user). Example:
+    ///     cross_user_agents:
+    ///       kira: /home/kira/.deskd/bus.sock
+    /// When `agent:kira` is targeted, the message is delivered to kira's bus
+    /// instead of falling back to the local internal/parent bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_user_agents: Option<HashMap<String, String>>,
 }
 
 /// An A2A skill advertised in the Agent Card (per A2A spec).
