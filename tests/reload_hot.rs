@@ -296,6 +296,7 @@ async fn reload_does_not_kill_in_flight_worker_task() {
         container: None,
         runtime: Default::default(),
         launch_mode: Default::default(),
+        bus_socket: None,
     };
     let components = deskd::app::agent_components::AgentComponents {
         adapter_handles: Vec::new(),
@@ -381,6 +382,7 @@ async fn reload_applies_schedule_changes() {
         container: None,
         runtime: Default::default(),
         launch_mode: Default::default(),
+        bus_socket: None,
     };
     let components = deskd::app::agent_components::AgentComponents {
         adapter_handles: Vec::new(),
@@ -476,6 +478,7 @@ async fn reload_pipeline_updates_last_reload_at() {
         container: None,
         runtime: Default::default(),
         launch_mode: Default::default(),
+        bus_socket: None,
     };
 
     let components = deskd::app::agent_components::AgentComponents {
