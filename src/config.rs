@@ -40,10 +40,6 @@ fn default_max_turns() -> u32 {
     100
 }
 
-fn default_budget_usd() -> f64 {
-    50.0
-}
-
 // ─── Root workspace.yaml ─────────────────────────────────────────────────────
 
 /// Top-level workspace config (workspace.yaml).
@@ -588,11 +584,6 @@ pub struct AgentDef {
     /// Command to run as the agent process. Defaults to ["claude"].
     #[serde(default = "default_command")]
     pub command: Vec<String>,
-    /// Budget cap in USD. Worker rejects tasks when exceeded.
-    /// A value of `0` (or any non-positive value) disables the cap and treats
-    /// the agent as having an unlimited budget; see worker::check_budget.
-    #[serde(default = "default_budget_usd")]
-    pub budget_usd: f64,
     /// Container config. When set, the agent process runs inside a container.
     #[serde(default)]
     pub container: Option<ContainerConfig>,
@@ -1205,6 +1196,25 @@ agents:
         assert!(cfg.agents[0].config.is_none());
     }
 
+    /// Legacy `workspace.yaml` files in the wild still carry `budget_usd:`
+    /// per-agent (the field was dropped in #498). The parser must silently
+    /// ignore the field rather than fail — serde tolerates unknown fields
+    /// by default, so AgentDef must NOT opt into `deny_unknown_fields`.
+    #[test]
+    fn test_workspace_config_ignores_legacy_budget_usd_field() {
+        let yaml = r#"
+agents:
+  - name: kira
+    work_dir: /home/kira
+    unix_user: kira
+    budget_usd: 50.0
+"#;
+        let cfg: WorkspaceConfig =
+            serde_yaml::from_str(yaml).expect("legacy budget_usd field must be ignored, not error");
+        assert_eq!(cfg.agents[0].name, "kira");
+        assert_eq!(cfg.agents[0].work_dir, "/home/kira");
+    }
+
     #[test]
     fn test_workspace_config_alerts_block() {
         let yaml = r#"
@@ -1560,7 +1570,6 @@ agents:
             discord: None,
             model: None,
             command: vec!["claude".into()],
-            budget_usd: 50.0,
             container: None,
             runtime: ConfigAgentRuntime::default(),
             launch_mode: ConfigLaunchMode::default(),
@@ -1580,7 +1589,6 @@ agents:
             discord: None,
             model: None,
             command: vec!["claude".into()],
-            budget_usd: 50.0,
             container: None,
             runtime: ConfigAgentRuntime::default(),
             launch_mode: ConfigLaunchMode::default(),
@@ -1788,7 +1796,6 @@ telegram:
             discord: None,
             model: None,
             command: vec!["claude".into()],
-            budget_usd: 50.0,
             container: None,
             runtime: Default::default(),
             launch_mode: Default::default(),
@@ -1808,7 +1815,6 @@ telegram:
             discord: None,
             model: None,
             command: vec!["claude".into()],
-            budget_usd: 50.0,
             container: None,
             runtime: Default::default(),
             launch_mode: Default::default(),

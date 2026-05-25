@@ -37,8 +37,6 @@ impl TokenUsage {
 pub struct TaskLimits {
     /// Max assistant turns (tool-use loops) before killing the process.
     pub max_turns: Option<u32>,
-    /// Max cumulative cost (USD) for this agent before killing.
-    pub budget_usd: Option<f64>,
 }
 
 /// Result of a single executor turn (task completion).

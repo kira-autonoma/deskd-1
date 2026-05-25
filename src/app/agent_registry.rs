@@ -28,9 +28,6 @@ pub struct AgentConfig {
     /// Optional Linux user to run the agent process as.
     #[serde(default)]
     pub unix_user: Option<String>,
-    /// Budget cap in USD.
-    #[serde(default = "default_budget_usd")]
-    pub budget_usd: f64,
     /// Command to run. Defaults to ["claude"].
     #[serde(default = "default_agent_command")]
     pub command: Vec<String>,
@@ -77,10 +74,6 @@ pub struct AgentConfig {
     /// [`crate::app::worker::DEFAULT_EMPTY_COMPLETION_RESTART_MIN_SECS`].
     #[serde(default)]
     pub empty_completion_restart_min_secs: Option<u64>,
-}
-
-fn default_budget_usd() -> f64 {
-    50.0
 }
 
 pub fn default_agent_command() -> Vec<String> {
@@ -322,7 +315,6 @@ pub async fn create_or_recover(
         work_dir: def.work_dir.clone(),
         max_turns,
         unix_user: def.unix_user.clone(),
-        budget_usd: def.budget_usd,
         command: def.command.clone(),
         config_path: Some(def.config_path()),
         container: def.container.clone(),
@@ -751,7 +743,6 @@ pub async fn spawn_ephemeral(
         work_dir: work_dir.to_string(),
         max_turns,
         unix_user: None,
-        budget_usd: 50.0,
         command: default_agent_command(),
         config_path: None,
         container: None,
@@ -798,8 +789,32 @@ total_cost: 0.0
 created_at: "2024-01-01T00:00:00Z"
 "#;
         let state: AgentState = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(state.config.budget_usd, 50.0);
         assert!(state.config.unix_user.is_none());
+    }
+
+    /// Legacy state files / workspace yaml may still carry the removed
+    /// `budget_usd` field (see #498). Parsing must succeed and silently
+    /// ignore it — serde tolerates unknown fields by default and the
+    /// struct must NOT opt into `deny_unknown_fields`.
+    #[test]
+    fn test_agent_config_ignores_legacy_budget_usd_field() {
+        let yaml = r#"
+config:
+  name: test
+  model: claude-opus-4-6
+  system_prompt: ""
+  work_dir: /tmp
+  max_turns: 100
+  budget_usd: 50.0
+pid: 0
+session_id: ""
+total_turns: 0
+total_cost: 0.0
+created_at: "2024-01-01T00:00:00Z"
+"#;
+        let state: AgentState =
+            serde_yaml::from_str(yaml).expect("legacy budget_usd field must be ignored, not error");
+        assert_eq!(state.config.name, "test");
     }
 
     #[test]
@@ -811,7 +826,6 @@ created_at: "2024-01-01T00:00:00Z"
             work_dir: "/tmp".to_string(),
             max_turns: 100,
             unix_user: Some("agent1".to_string()),
-            budget_usd: 10.0,
             command: vec!["claude".to_string()],
             config_path: Some("/home/agent1/deskd.yaml".to_string()),
             container: None,
@@ -884,7 +898,6 @@ created_at: "2024-01-01T00:00:00Z"
             work_dir: "/tmp".to_string(),
             max_turns: 50,
             unix_user: None,
-            budget_usd: 25.0,
             command: vec!["claude".to_string()],
             config_path: None,
             container: None,
@@ -927,7 +940,6 @@ created_at: "2024-01-01T00:00:00Z"
         assert_eq!(loaded.total_turns, 10);
         assert_eq!(loaded.total_cost, 1.23);
         assert_eq!(loaded.parent.as_deref(), Some("parent-agent"));
-        assert_eq!(loaded.config.budget_usd, 25.0);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

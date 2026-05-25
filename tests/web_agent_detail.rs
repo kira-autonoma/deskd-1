@@ -170,7 +170,6 @@ fn mk_agent_state(name: &str, status: &str) -> AgentState {
             work_dir: format!("/tmp/{}", name),
             max_turns: 100,
             unix_user: None,
-            budget_usd: 50.0,
             command: vec!["claude".into()],
             config_path: None,
             container: None,

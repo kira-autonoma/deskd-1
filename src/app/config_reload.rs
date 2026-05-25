@@ -154,7 +154,6 @@ pub async fn spawn_components(
                 work_dir: def.work_dir.clone(),
                 max_turns: ucfg.max_turns,
                 unix_user: def.unix_user.clone(),
-                budget_usd: def.budget_usd,
                 command,
                 config_path: Some(cfg_path.to_string()),
                 container: def.container.clone(),

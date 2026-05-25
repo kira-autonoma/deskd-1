@@ -290,8 +290,6 @@ pub enum AgentAction {
         max_turns: u32,
         #[arg(long)]
         unix_user: Option<String>,
-        #[arg(long, default_value = "50.0")]
-        budget_usd: f64,
         #[arg(long, num_args = 1.., value_delimiter = ' ')]
         command: Vec<String>,
     },

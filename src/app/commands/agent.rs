@@ -18,7 +18,6 @@ pub async fn handle(action: AgentAction) -> Result<()> {
             workdir,
             max_turns,
             unix_user,
-            budget_usd,
             command,
         } => {
             let cfg = agent::AgentConfig {
@@ -28,7 +27,6 @@ pub async fn handle(action: AgentAction) -> Result<()> {
                 work_dir: workdir.unwrap_or_else(|| ".".into()),
                 max_turns,
                 unix_user,
-                budget_usd,
                 command: if command.is_empty() {
                     vec!["claude".to_string()]
                 } else {
@@ -201,11 +199,6 @@ pub async fn handle(action: AgentAction) -> Result<()> {
             );
             println!("Total turns:{}", s.total_turns);
             println!("Total cost: ${:.4}", s.total_cost);
-            if s.config.budget_usd > 0.0 {
-                println!("Budget:     ${:.2}", s.config.budget_usd);
-            } else {
-                println!("Budget:     unlimited");
-            }
             println!(
                 "Session:    {}",
                 if s.session_id.is_empty() {
@@ -429,11 +422,6 @@ pub async fn handle(action: AgentAction) -> Result<()> {
                 println!("Model:       {}", s.config.model);
                 println!("Turns:       {}", s.total_turns);
                 println!("Cost:        ${:.4}", s.total_cost);
-                if s.config.budget_usd > 0.0 {
-                    println!("Budget:      ${:.2}", s.config.budget_usd);
-                } else {
-                    println!("Budget:      unlimited");
-                }
                 println!("Created:     {}", s.created_at);
                 println!("Work dir:    {}", s.config.work_dir);
                 if !s.current_task.is_empty() {

@@ -1093,7 +1093,6 @@ mod restart_tests {
             work_dir: "/tmp".into(),
             max_turns: 10,
             unix_user: None,
-            budget_usd: 50.0,
             command: vec!["claude".into()],
             config_path: None,
             container: None,

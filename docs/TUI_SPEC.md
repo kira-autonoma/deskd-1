@@ -543,7 +543,7 @@ interface InboxMessage {
 │ Status: BUSY (task-142)     Model: claude-opus-4-6                   │
 │ Session: persistent          PID: 48291          Uptime: 4h 23m      │
 │ Work dir: /home/dev          User: dev           Bus: bus.sock       │
-│ Budget: $50.00               Used: $12.47 (24.9%)                    │
+│ Used: $12.47                                                         │
 │ Capabilities: coding, review, delegation                             │
 ├──────────────────────────────────────────────────────────────────────┤
 │ Current Task                                                         │
@@ -710,8 +710,6 @@ interface InboxMessage {
 │  $1 │ ██ ██ ██ ██ ██                                                  │
 │  $0 ┼──┼──┼──┼──┼──┼──┼──┼──                                         │
 │     08 09 10 11 12 13 14                                              │
-├───────────────────────────────────────────────────────────────────────┤
-│ Budget: $50.00/day    Used: $12.47 (24.9%)    ████████░░░░░░░░░░░░   │
 ├───────────────────────────────────────────────────────────────────────┤
 │ t cycle period  Enter agent detail                         Esc back  │
 └───────────────────────────────────────────────────────────────────────┘

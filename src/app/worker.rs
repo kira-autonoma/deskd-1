@@ -233,7 +233,6 @@ pub async fn run(
     task_store: &dyn crate::ports::store::TaskRepository,
 ) -> Result<()> {
     let initial_state = agent::load_state(name)?;
-    let budget_usd = initial_state.config.budget_usd;
 
     // Use custom subscriptions if provided, otherwise default.
     // Default subscriptions: Workers receive:
@@ -273,10 +272,7 @@ pub async fn run(
         }),
         AgentKind::Executor => configured_max_turns,
     };
-    let limits = agent::TaskLimits {
-        max_turns,
-        budget_usd: Some(budget_usd),
-    };
+    let limits = agent::TaskLimits { max_turns };
 
     info!(agent = %name, runtime = ?agent_runtime, kind = ?agent_kind, "agent process ready, waiting for tasks");
 
@@ -427,10 +423,7 @@ pub async fn run(
                         Keep: decisions, errors, current state, cross-agent correlations. \
                         Drop: routine status updates, repeated checks, duplicated information. \
                         Output a condensed summary of everything important.";
-                    let compact_limits = agent::TaskLimits {
-                        max_turns: Some(3),
-                        budget_usd: Some(budget_usd),
-                    };
+                    let compact_limits = agent::TaskLimits { max_turns: Some(3) };
                     match process
                         .send_task(compact_prompt, None, None, &compact_limits)
                         .await
@@ -506,20 +499,6 @@ pub async fn run(
                 continue;
             }
         };
-
-        // Check budget.
-        if let Some(budget_error) = check_budget(name, budget_usd) {
-            log_skip(name, &msg, &ctx, "skip", Some("budget exceeded"));
-            let reply_target = msg.reply_to.as_deref().unwrap_or(&msg.source);
-            write_bus_envelope(
-                &writer,
-                name,
-                reply_target,
-                serde_json::json!({"error": budget_error, "in_reply_to": msg.id}),
-            )
-            .await;
-            continue;
-        }
 
         // Write to unified inbox (skip Telegram — adapter already writes those).
         if !msg.source.starts_with("telegram-") {
@@ -777,10 +756,7 @@ pub async fn run(
                         Summarize everything important from this session: decisions made, \
                         current state of work, errors encountered, and next steps. \
                         Be thorough but concise — this summary will be your working memory.";
-                    let compact_limits = agent::TaskLimits {
-                        max_turns: Some(3),
-                        budget_usd: Some(budget_usd),
-                    };
+                    let compact_limits = agent::TaskLimits { max_turns: Some(3) };
                     match process
                         .send_task(compact_prompt, None, None, &compact_limits)
                         .await
@@ -1050,39 +1026,6 @@ fn extract_task_context(msg: &Message, _name: &str) -> Option<TaskContext> {
     })
 }
 
-/// Check if budget is exceeded. Returns Some(error_message) if over budget.
-///
-/// `budget_usd <= 0.0` disables the cap (unlimited budget); see #387.
-fn check_budget(name: &str, budget_usd: f64) -> Option<String> {
-    if !budget_enforced(budget_usd) {
-        return None;
-    }
-    let current_state = agent::load_state(name).ok()?;
-    if current_state.total_cost >= budget_usd {
-        warn!(
-            agent = %name,
-            cost = current_state.total_cost,
-            budget = budget_usd,
-            "budget exceeded, rejecting task"
-        );
-        Some(format!(
-            "Budget limit reached (${:.2} / ${:.2}). Task not processed.",
-            current_state.total_cost, budget_usd,
-        ))
-    } else {
-        None
-    }
-}
-
-/// Returns true when `budget_usd` should be enforced as a hard cap.
-///
-/// A non-positive value (including `0.0`) means "unlimited" — the worker
-/// skips the cost check entirely. NaN is treated as disabled too so that
-/// a malformed config can never block tasks silently.
-fn budget_enforced(budget_usd: f64) -> bool {
-    budget_usd > 0.0
-}
-
 /// Persist a per-turn context measurement to `~/.deskd/logs/<agent>/context.jsonl`
 /// (#403 AC #2). Captures pinned-token count, resolved auto-compact threshold,
 /// and model context window so future strategies (drop-tool-results,
@@ -1129,34 +1072,6 @@ fn log_context_measurement(name: &str, model: &str, usage: &agent::TokenUsage) {
     };
     if let Err(e) = crate::app::context_log::append(&entry) {
         warn!(agent = %name, error = %e, "context_log: append failed");
-    }
-}
-
-/// Log a skipped task (budget exceeded or empty payload).
-fn log_skip(name: &str, msg: &Message, ctx: &TaskContext, status: &str, error: Option<&str>) {
-    let parent_agent = agent::load_state(name).ok().and_then(|s| s.parent);
-    let log_entry = tasklog::TaskLog {
-        ts: chrono::Utc::now().to_rfc3339(),
-        source: msg.source.clone(),
-        turns: 0,
-        cost: 0.0,
-        duration_ms: 0,
-        status: status.to_string(),
-        task: tasklog::truncate_task(&ctx.task_raw, 60),
-        error: error.map(str::to_string),
-        msg_id: msg.id.clone(),
-        github_repo: ctx.github_repo.clone(),
-        github_pr: ctx.github_pr,
-        input_tokens: None,
-        output_tokens: None,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-        session_count: None,
-        tool_use_count: None,
-        parent_agent,
-    };
-    if let Err(e) = tasklog::log_task(name, &log_entry) {
-        warn!(agent = %name, error = %e, "failed to write task log");
     }
 }
 
@@ -1835,7 +1750,6 @@ mod tests {
             work_dir: "/tmp".into(),
             max_turns: 10,
             unix_user: None,
-            budget_usd: 50.0,
             command: vec!["claude".into()],
             config_path: None,
             container: None,
@@ -1916,36 +1830,6 @@ mod tests {
 
         let st = crate::app::agent::load_state(&name).unwrap();
         assert_eq!(st.consecutive_empty_completions, 3);
-    }
-
-    // ─── budget_enforced tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_budget_enforced_positive_value() {
-        assert!(budget_enforced(50.0));
-        assert!(budget_enforced(0.01));
-    }
-
-    #[test]
-    fn test_budget_enforced_zero_is_unlimited() {
-        assert!(!budget_enforced(0.0));
-    }
-
-    #[test]
-    fn test_budget_enforced_negative_is_unlimited() {
-        assert!(!budget_enforced(-1.0));
-    }
-
-    #[test]
-    fn test_budget_enforced_nan_is_unlimited() {
-        assert!(!budget_enforced(f64::NAN));
-    }
-
-    #[test]
-    fn test_check_budget_unlimited_skips_state_lookup() {
-        // A non-existent agent would cause load_state to fail; the early
-        // return on budget_usd == 0.0 must prevent any lookup.
-        assert!(check_budget("definitely-not-an-agent-xyz-387", 0.0).is_none());
     }
 
     // ─── truncate tests ──────────────────────────────────────────────────────

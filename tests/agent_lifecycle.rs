@@ -58,7 +58,6 @@ fn make_config(name: &str) -> deskd::app::agent::AgentConfig {
         work_dir: "/tmp/test-agent-work".into(),
         max_turns: 10,
         unix_user: None,
-        budget_usd: 25.0,
         command: vec!["echo".into()],
         config_path: None,
         container: None,
@@ -98,7 +97,6 @@ async fn test_agent_state_lifecycle() {
     // --- LOAD and verify persistence ---
     let loaded = deskd::app::agent::load_state("lifecycle-agent").unwrap();
     assert_eq!(loaded.config.name, "lifecycle-agent");
-    assert_eq!(loaded.config.budget_usd, 25.0);
     assert_eq!(loaded.config.model, "claude-sonnet-4-6");
 
     // --- UPDATE state (simulate worker updating after task) ---

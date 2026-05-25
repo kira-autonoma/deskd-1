@@ -680,20 +680,6 @@ impl AcpProcess {
             state.total_turns += assistant_turns;
             state.session_turns += assistant_turns;
             let _ = agent::save_state_pub(&state);
-
-            // Check budget (cost-based; ACP doesn't report cost, so this is
-            // only effective if cost was accumulated from other sources).
-            if let Some(budget) = limits.budget_usd
-                && state.total_cost >= budget
-            {
-                warn!(
-                    agent = %self.name,
-                    cost = state.total_cost,
-                    budget = budget,
-                    "budget exceeded, killing ACP process"
-                );
-                self.kill().await;
-            }
         }
 
         Ok(TurnResult {

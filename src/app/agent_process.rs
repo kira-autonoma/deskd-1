@@ -548,8 +548,8 @@ impl AgentProcess {
 
     /// Send a task to the persistent process and collect the response.
     ///
-    /// Enforces `limits` in real-time: if max_turns or budget is exceeded
-    /// mid-task, the process is killed immediately.
+    /// Enforces `limits` in real-time: if max_turns is exceeded mid-task,
+    /// the process is killed immediately.
     pub async fn send_task(
         &self,
         message: &str,
@@ -748,18 +748,6 @@ impl AgentProcess {
                         state.session_cost += cost_delta;
                         state.session_turns += turns_delta;
                         let _ = save_state(&state);
-
-                        if let Some(budget) = limits.budget_usd
-                            && state.total_cost >= budget
-                        {
-                            warn!(
-                                agent = %self.name,
-                                cost = state.total_cost,
-                                budget = budget,
-                                "budget exceeded, killing process"
-                            );
-                            self.kill().await;
-                        }
                     }
 
                     return Ok(result);

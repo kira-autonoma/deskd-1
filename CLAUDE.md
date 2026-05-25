@@ -49,7 +49,6 @@ agents:
     command: [claude, --output-format, stream-json, ...]
     telegram:                    # optional
       token: ${BOT_TOKEN}
-    budget_usd: 50.0             # optional, default 50
 ```
 
 ### deskd.yaml — per-agent config (at `{work_dir}/deskd.yaml`)

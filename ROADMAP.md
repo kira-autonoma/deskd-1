@@ -48,7 +48,7 @@ Related issues: #29
 
 **Goal**: deskd controls spend, not the agent. Different strategies per agent.
 
-- [ ] **Budget tracking per agent** — already have `total_cost` and `budget_usd` in agent state
+- [ ] **Budget tracking per agent** — already have `total_cost` in agent state
 - [ ] **Time-windowed budgets** — e.g. $5/hour, $50/day. deskd pauses the agent when budget exhausted for the window, resumes next window
 - [ ] **Scheduling strategies**:
   - `immediate` — process tasks as they come (current behavior)
