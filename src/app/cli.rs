@@ -44,6 +44,15 @@ pub enum Commands {
         /// Path to workspace.yaml.
         #[arg(long)]
         config: String,
+        /// Tear down `launch_mode: tmux` sessions on shutdown (#504).
+        ///
+        /// By default tmux REPLs are left running across `deskd serve`
+        /// restarts so they survive operator disconnects and daemon
+        /// reboots — that is the whole point of running an agent under
+        /// tmux. Pass `--include-tmux` to kill every `deskd-<agent>`
+        /// session whose `launch_mode: tmux` when SIGTERM hits.
+        #[arg(long = "include-tmux", default_value = "false")]
+        include_tmux: bool,
     },
     /// Run as MCP server for a specific agent (called by claude --mcp-server).
     /// Provides send_message and add_persistent_agent tools.

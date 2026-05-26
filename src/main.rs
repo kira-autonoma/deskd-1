@@ -44,8 +44,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Serve {
             config: config_path,
+            include_tmux,
         } => {
-            serve::serve(config_path).await?;
+            serve::serve_with_options(config_path, include_tmux).await?;
         }
         Commands::Mcp { agent } => {
             mcp::run(&agent).await?;

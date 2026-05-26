@@ -128,6 +128,16 @@ pub struct AgentState {
     /// Cumulative number of auto-restarts triggered by empty-completion detection (#424).
     #[serde(default)]
     pub total_empty_restarts: u32,
+    /// Tmux session name for agents launched with `launch_mode: tmux` (#504).
+    /// Recorded when `deskd serve` provisions + launches (or adopts) the
+    /// detached tmux REPL. Used by `agent list` / `agent stop` / restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
+    /// Tmux session log path for `launch_mode: tmux` agents (#504).
+    /// Captured at launch from `launch_tmux_session` so operators can `tail -F`
+    /// the file without re-deriving it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_log_path: Option<String>,
 }
 
 fn default_status() -> String {
@@ -245,6 +255,8 @@ pub async fn create(cfg: &AgentConfig) -> Result<AgentState> {
         consecutive_empty_completions: 0,
         last_empty_restart_at: None,
         total_empty_restarts: 0,
+        tmux_session: None,
+        tmux_log_path: None,
     };
 
     save_state(&state)?;
@@ -283,6 +295,8 @@ pub async fn create_or_update_from_config(cfg: &AgentConfig) -> Result<AgentStat
         consecutive_empty_completions: 0,
         last_empty_restart_at: None,
         total_empty_restarts: 0,
+        tmux_session: None,
+        tmux_log_path: None,
     };
     save_state(&state)?;
     info!(agent = %cfg.name, "sub-agent created");
@@ -308,6 +322,17 @@ pub async fn create_or_recover(
 
     let max_turns = user_cfg.map(|c| c.max_turns).unwrap_or(100);
 
+    // `launch_mode` precedence (#504): the per-agent deskd.yaml is the
+    // primary source so operators can flip a single agent to tmux without
+    // editing the shared workspace.yaml. The workspace `AgentDef` value is
+    // a fallback for the legacy path (and tests) that never load a user
+    // config. When both are `Subprocess` (default), the result is
+    // `Subprocess`, preserving full backward-compat.
+    let launch_mode = user_cfg
+        .map(|c| c.launch_mode.clone())
+        .filter(|m| *m != crate::domain::config_types::ConfigLaunchMode::default())
+        .unwrap_or_else(|| def.launch_mode.clone());
+
     let cfg = AgentConfig {
         name: def.name.clone(),
         model,
@@ -320,7 +345,7 @@ pub async fn create_or_recover(
         container: def.container.clone(),
         session: ConfigSessionMode::default(),
         runtime: def.runtime.clone(),
-        launch_mode: def.launch_mode.clone(),
+        launch_mode,
         kind: ConfigAgentKind::default(),
         context: user_cfg.and_then(|c| c.context.clone()),
         compact_threshold: None,
@@ -357,6 +382,8 @@ pub async fn create_or_recover(
         consecutive_empty_completions: 0,
         last_empty_restart_at: None,
         total_empty_restarts: 0,
+        tmux_session: None,
+        tmux_log_path: None,
     };
     save_state(&state)?;
     info!(agent = %def.name, "agent created");
@@ -858,6 +885,8 @@ created_at: "2024-01-01T00:00:00Z"
             consecutive_empty_completions: 0,
             last_empty_restart_at: None,
             total_empty_restarts: 0,
+            tmux_session: None,
+            tmux_log_path: None,
         };
         let yaml = serde_yaml::to_string(&state).unwrap();
         let restored: AgentState = serde_yaml::from_str(&yaml).unwrap();
@@ -930,6 +959,8 @@ created_at: "2024-01-01T00:00:00Z"
             consecutive_empty_completions: 0,
             last_empty_restart_at: None,
             total_empty_restarts: 0,
+            tmux_session: None,
+            tmux_log_path: None,
         };
 
         save_state(&state).unwrap();

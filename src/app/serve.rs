@@ -1,7 +1,7 @@
 //! `deskd serve` — start per-agent buses, workers, adapters, and schedules.
 
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::app::adapters::federation;
 use crate::app::adapters::web;
@@ -10,11 +10,24 @@ use crate::app::reload_state::ReloadState;
 use crate::app::transcript_extractor;
 use crate::app::{agent, alerts, bus, bus_api, config_reload, worker, workflow};
 use crate::config;
+use crate::domain::config_types::ConfigLaunchMode;
 use crate::infra::diag;
 
 /// Start per-agent buses and workers for all agents in workspace config.
 /// Each agent has its own isolated bus at {work_dir}/.deskd/bus.sock.
+///
+/// `include_tmux` controls shutdown semantics for `launch_mode: tmux` agents
+/// (#504). When `false` (default), tmux sessions are left running across
+/// `deskd serve` restarts — the REPLs survive operator disconnects and
+/// daemon reboots. When `true`, all tmux sessions launched/adopted by this
+/// serve are torn down via `tmux kill-session` on shutdown.
 pub async fn serve(config_path: String) -> Result<()> {
+    serve_with_options(config_path, false).await
+}
+
+/// Like [`serve`], but lets the caller opt into tearing down tmux sessions
+/// on shutdown via `--include-tmux` (#504).
+pub async fn serve_with_options(config_path: String, include_tmux: bool) -> Result<()> {
     let workspace = config::WorkspaceConfig::load(&config_path)?;
     info!(path = %config_path, agents = workspace.agents.len(), "loaded workspace config");
 
@@ -134,8 +147,45 @@ pub async fn serve(config_path: String) -> Result<()> {
             info!(agent = %name, "started bus API handler");
         }
 
-        // Start worker on the agent's bus.
-        {
+        // Branch on launch_mode (#504). Tmux agents run their Claude REPL
+        // inside a detached `deskd-<name>` session and communicate with deskd
+        // via MCP channels (no subprocess stdio). Skip the worker loop —
+        // there's no stream-json to read, and message routing is handled by
+        // mcp-channel running inside the tmux'd claude process.
+        if state.config.launch_mode == ConfigLaunchMode::Tmux {
+            let work_dir_path = std::path::PathBuf::from(&def.work_dir);
+            let bus_path = std::path::PathBuf::from(&bus_socket);
+            match crate::app::agent_process::ensure_tmux_launched(&name, &work_dir_path, &bus_path)
+                .await
+            {
+                Ok(outcome) => {
+                    if let Ok(mut s) = agent::load_state(&name) {
+                        s.tmux_session = Some(outcome.session_name.clone());
+                        s.tmux_log_path = Some(outcome.log_path.display().to_string());
+                        // Clear any stale subprocess pid so `agent list` /
+                        // `format_launcher_column` doesn't keep showing it.
+                        s.pid = 0;
+                        let _ = agent::save_state_pub(&s);
+                    }
+                    info!(
+                        agent = %name,
+                        session = %outcome.session_name,
+                        adopted = outcome.adopted,
+                        "tmux launch path active — worker loop skipped"
+                    );
+                }
+                Err(e) => {
+                    diag::error_event(
+                        Some(&bus_socket),
+                        "supervisor",
+                        "tmux.launch_failed",
+                        format!("tmux launch failed: {}", e),
+                        serde_json::json!({ "agent": name }),
+                    );
+                }
+            }
+        } else {
+            // Start worker on the agent's bus (subprocess launch path).
             let bus = bus_socket.clone();
             let worker_name = name.clone();
             let worker_task_store = crate::app::task::TaskStore::default_for_home();
@@ -503,6 +553,39 @@ pub async fn serve(config_path: String) -> Result<()> {
     info!("all agents started — press Ctrl-C to stop");
 
     tokio::signal::ctrl_c().await?;
+
+    // ── Shutdown teardown ────────────────────────────────────────────────
+    //
+    // Default: leave `launch_mode: tmux` sessions running so their REPLs
+    // survive across `deskd serve` restarts (per #504 design). Operators
+    // who want a clean teardown pass `--include-tmux`, which kills every
+    // `deskd-<agent>` session for an agent declared with `launch_mode:
+    // tmux` in the workspace.
+    if include_tmux {
+        for def in &workspace.agents {
+            // Re-load each agent's launch_mode from disk so we honour
+            // whatever the live state-file says (matches how `agent list`
+            // already does discovery).
+            let mode = agent::load_state(&def.name)
+                .map(|s| s.config.launch_mode)
+                .unwrap_or_default();
+            if mode != ConfigLaunchMode::Tmux {
+                continue;
+            }
+            match crate::app::tmux_launcher::kill_tmux_session(&def.name) {
+                Ok(_) => info!(
+                    agent = %def.name,
+                    "tore down tmux session on shutdown (--include-tmux)"
+                ),
+                Err(e) => warn!(
+                    agent = %def.name,
+                    error = %e,
+                    "failed to kill tmux session on shutdown"
+                ),
+            }
+        }
+    }
+
     config::ServeState::remove();
     info!("shutting down");
     Ok(())

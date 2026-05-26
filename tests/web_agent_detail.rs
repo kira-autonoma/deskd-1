@@ -204,6 +204,8 @@ fn mk_agent_state(name: &str, status: &str) -> AgentState {
         consecutive_empty_completions: 0,
         last_empty_restart_at: None,
         total_empty_restarts: 0,
+        tmux_session: None,
+        tmux_log_path: None,
     }
 }
 

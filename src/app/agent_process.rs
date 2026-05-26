@@ -822,3 +822,110 @@ impl Executor for AgentProcess {
         Box::pin(self.stop())
     }
 }
+
+// ─── Tmux launch path (#504) ────────────────────────────────────────────────
+//
+// When `state.config.launch_mode == ConfigLaunchMode::Tmux`, `deskd serve`
+// does NOT spawn the subprocess path above. Instead it calls
+// [`ensure_tmux_launched`] which provisions the user's Claude home (via the
+// #503 helper) and starts a detached `deskd-<name>` tmux session. The agent
+// inside that tmux session connects back to deskd over its bus via the
+// `mcp-channel` MCP server — channels, not stdio, are how messages move.
+//
+// On boot, if `deskd-<name>` already exists, the session is adopted (no
+// re-launch). This makes `deskd serve` idempotent across daemon restarts:
+// a crashed deskd that comes back up does not kill working tmux REPLs.
+
+/// Outcome of [`ensure_tmux_launched`].
+#[derive(Debug, Clone)]
+pub struct TmuxLaunchOutcome {
+    pub session_name: String,
+    pub log_path: std::path::PathBuf,
+    /// True when the session was already running and we adopted it; false
+    /// when we provisioned + launched fresh.
+    pub adopted: bool,
+}
+
+/// Ensure a tmux session for `name` is running, provisioning + launching if
+/// needed. Used by `deskd serve` when the agent's `launch_mode == Tmux`.
+///
+/// Behaviour:
+/// 1. If `deskd-<name>` already exists → adopt (no re-launch, no re-provision).
+/// 2. Otherwise → call [`super::agent_provisioning::provision_for_channel_tmux`]
+///    so the upcoming `claude --dangerously-load-development-channels`
+///    invocation does not block on first-run prompts (#503), then call
+///    [`super::tmux_launcher::launch_tmux_session`] to start the detached
+///    REPL.
+///
+/// On success the caller persists `session_name` + `log_path` into the
+/// agent's state file so `deskd agent list` / `restart` / `stop` see the
+/// session uniformly with subprocess agents.
+pub async fn ensure_tmux_launched(
+    name: &str,
+    work_dir: &std::path::Path,
+    bus_socket: &std::path::Path,
+) -> Result<TmuxLaunchOutcome> {
+    use super::agent_provisioning::provision_for_channel_tmux;
+    use super::tmux_launcher::{
+        LaunchTarget, launch_tmux_session, resolve_log_dir, session_name_for, tmux_session_exists,
+    };
+
+    let session = session_name_for(name);
+
+    // ── Adopt path: a `deskd-<name>` session is already alive ────────────
+    if tmux_session_exists(&session)
+        .with_context(|| format!("tmux has-session probe failed for `{}`", session))?
+    {
+        // Recompute the canonical log path so the state file picks it up
+        // even after a deskd restart that didn't previously record it.
+        let log_dir = resolve_log_dir().with_context(|| {
+            format!(
+                "failed to resolve tmux log dir while adopting session `{}`",
+                session
+            )
+        })?;
+        let log_path = log_dir.join(format!("{}.log", name));
+        info!(
+            agent = %name,
+            session = %session,
+            log = %log_path.display(),
+            "adopted existing tmux session — no re-launch"
+        );
+        return Ok(TmuxLaunchOutcome {
+            session_name: session,
+            log_path,
+            adopted: true,
+        });
+    }
+
+    // ── Fresh-launch path: provision then launch ─────────────────────────
+    provision_for_channel_tmux(work_dir, name, bus_socket).with_context(|| {
+        format!(
+            "tmux launch for `{}` failed during provisioning of {}",
+            name,
+            work_dir.display()
+        )
+    })?;
+
+    let log_dir = resolve_log_dir()
+        .with_context(|| format!("failed to resolve tmux log dir for `{}`", name))?;
+    let target = LaunchTarget {
+        name,
+        home_dir: work_dir,
+    };
+    let launched = launch_tmux_session(&target, &log_dir)
+        .with_context(|| format!("`tmux new-session` failed for `{}`", name))?;
+
+    info!(
+        agent = %name,
+        session = %launched.session_name,
+        log = %launched.log_path.display(),
+        "launched tmux session for serve"
+    );
+
+    Ok(TmuxLaunchOutcome {
+        session_name: launched.session_name,
+        log_path: launched.log_path,
+        adopted: false,
+    })
+}

@@ -966,6 +966,55 @@ async fn restart_agents(
 async fn restart_one_agent(name: &str, fresh_session: bool, timeout_secs: u64) -> Result<()> {
     use std::time::Duration;
 
+    // ── Tmux launch mode: tear down + re-provision + re-launch (#504) ────
+    //
+    // The subprocess restart path below SIGTERMs a child pid that doesn't
+    // exist for tmux agents — the REPL lives inside a detached tmux
+    // session, not under deskd's supervision tree. Branch here so
+    // operators get the right behaviour from `deskd agent restart <name>`.
+    let launch_mode = agent::load_state(name)
+        .map(|s| s.config.launch_mode)
+        .unwrap_or_default();
+    if launch_mode == crate::domain::config_types::ConfigLaunchMode::Tmux {
+        crate::app::tmux_launcher::kill_tmux_session(name)?;
+        // Allow tmux a brief beat to drop the session entry before we
+        // probe again on launch.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let state = agent::load_state(name)?;
+        let work_dir = std::path::PathBuf::from(&state.config.work_dir);
+        let bus_path = std::path::PathBuf::from(config::agent_bus_socket(&state.config.work_dir));
+        let outcome =
+            crate::app::agent_process::ensure_tmux_launched(name, &work_dir, &bus_path).await?;
+
+        if fresh_session {
+            // For tmux agents `session_id` is owned by the claude REPL
+            // inside tmux. We still honour --fresh-session by clearing
+            // the locally-cached id so the next inbound MCP turn picks a
+            // new id and the state-file numbers reset.
+            if let Ok(mut s) = agent::load_state(name) {
+                s.session_id.clear();
+                s.session_cost = 0.0;
+                s.session_turns = 0;
+                s.session_start = None;
+                let _ = agent::save_state_pub(&s);
+            }
+        }
+        if let Ok(mut s) = agent::load_state(name) {
+            s.tmux_session = Some(outcome.session_name.clone());
+            s.tmux_log_path = Some(outcome.log_path.display().to_string());
+            s.pid = 0;
+            let _ = agent::save_state_pub(&s);
+        }
+        println!(
+            "agent {}: tmux session re-launched as `{}` (logs={})",
+            name,
+            outcome.session_name,
+            outcome.log_path.display()
+        );
+        return Ok(());
+    }
+
     // Shared with bus_api::handle_agent_restart — see the doc-comment above
     // for why we deliberately do not dispatch through the bus.
     let outcome = crate::app::mcp_service::perform_agent_restart(name, fresh_session).await?;

@@ -1782,6 +1782,8 @@ mod tests {
             consecutive_empty_completions: 0,
             last_empty_restart_at: None,
             total_empty_restarts: 0,
+            tmux_session: None,
+            tmux_log_path: None,
         };
         crate::app::agent::save_state_pub(&state).unwrap();
         (name, guard)
