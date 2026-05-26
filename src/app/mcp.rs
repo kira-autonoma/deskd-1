@@ -340,12 +340,17 @@ fn handle_tools_list(
                     "subscribe": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Bus targets to subscribe to (e.g. [\"agent:helper\", \"queue:tasks\"])"
+                        "description": "Bus targets to subscribe to (e.g. [\"agent:helper\", \"queue:tasks\"]). Only used when lifecycle=stream-json — the tmux-channel REPL builds its own subscriptions via mcp-channel."
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["inherit", "narrow"],
                         "description": "Scope type: 'inherit' = shares parent scope (default), 'narrow' = isolated sub-scope"
+                    },
+                    "lifecycle": {
+                        "type": "string",
+                        "enum": ["stream-json", "tmux-channel"],
+                        "description": "Sub-agent runtime. 'stream-json' (default) = subprocess Claude in --output-format stream-json (one process per task). 'tmux-channel' = persistent Claude REPL inside a detached deskd-<name> tmux session, receiving tasks via mcp-channel on the parent's internal bus. The tmux-channel path keeps long-running REPL context and survives operator disconnects."
                     },
                     "work_dir": {
                         "type": "string",

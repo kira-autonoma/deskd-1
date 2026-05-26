@@ -353,6 +353,54 @@ pub(crate) async fn call_reply(args: &Value, agent_name: &str, bus_socket: &str)
     }))
 }
 
+/// Sub-agent runtime lifecycle accepted by [`call_add_persistent_agent`].
+///
+/// `StreamJson` is the historical worker — `deskd agent run` spawns a Claude
+/// subprocess in `--output-format stream-json` mode, one fresh process per
+/// task, exits between tasks. `TmuxChannel` (#502) keeps a persistent Claude
+/// REPL inside a detached `deskd-<name>` tmux session that talks to the
+/// internal bus via the `mcp-channel` MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubAgentLifecycle {
+    StreamJson,
+    TmuxChannel,
+}
+
+impl SubAgentLifecycle {
+    fn as_str(self) -> &'static str {
+        match self {
+            SubAgentLifecycle::StreamJson => "stream-json",
+            SubAgentLifecycle::TmuxChannel => "tmux-channel",
+        }
+    }
+}
+
+/// Parse the `lifecycle` argument of [`call_add_persistent_agent`].
+///
+/// - Missing / null → `StreamJson` (default, preserves byte-for-byte backward
+///   compatibility with pre-#502 callers).
+/// - `"stream-json"` → `StreamJson`.
+/// - `"tmux-channel"` → `TmuxChannel`.
+/// - Anything else (including non-string values) → `bail!` with a list of the
+///   accepted values, so callers fail fast on typos.
+pub(crate) fn parse_lifecycle_arg(args: &Value) -> Result<SubAgentLifecycle> {
+    match args.get("lifecycle") {
+        None | Some(Value::Null) => Ok(SubAgentLifecycle::StreamJson),
+        Some(Value::String(s)) => match s.as_str() {
+            "stream-json" => Ok(SubAgentLifecycle::StreamJson),
+            "tmux-channel" => Ok(SubAgentLifecycle::TmuxChannel),
+            other => bail!(
+                "lifecycle must be 'stream-json' or 'tmux-channel' (got '{}')",
+                other
+            ),
+        },
+        Some(other) => bail!(
+            "lifecycle must be a string ('stream-json' or 'tmux-channel'), got {}",
+            other
+        ),
+    }
+}
+
 pub(crate) async fn call_add_persistent_agent(
     args: &Value,
     parent_name: &str,
@@ -392,6 +440,10 @@ pub(crate) async fn call_add_persistent_agent(
         _ => crate::config::ScopeType::Inherit,
     };
 
+    // Lifecycle (#502): `stream-json` (default, existing worker) or
+    // `tmux-channel` (detached Claude REPL inside `deskd-<name>` tmux).
+    let lifecycle = parse_lifecycle_arg(args)?;
+
     // Get the deskd binary path (we are running as a subprocess of claude, so $0 is deskd).
     let deskd_bin = std::env::var("DESKD_BIN").unwrap_or_else(|_| "deskd".to_string());
 
@@ -404,6 +456,8 @@ pub(crate) async fn call_add_persistent_agent(
         .unwrap_or_else(|| parent_work_dir.clone());
 
     // Validate work_dir containment: child must be within parent's scope.
+    // Enforced for BOTH lifecycle paths so tmux-channel cannot escape scope
+    // either (AC: "work_dir containment still enforced for both").
     {
         let child_path = std::path::Path::new(&work_dir)
             .canonicalize()
@@ -484,7 +538,7 @@ pub(crate) async fn call_add_persistent_agent(
         }
     }
 
-    // Set parent + scope fields on the created agent state.
+    // Set parent + scope + lifecycle fields on the created agent state.
     if let Ok(mut state) = crate::app::agent::load_state(name) {
         state.parent = Some(parent_name.to_string());
         state.scope = Some(scope_type.to_string());
@@ -494,6 +548,15 @@ pub(crate) async fn call_add_persistent_agent(
         if !child_env.is_empty() {
             state.env_keys = Some(child_env.keys().cloned().collect());
         }
+        // Reflect the lifecycle in `config.launch_mode` so `agent list` /
+        // `agent stop` / the web UI see a tmux-channel sub-agent uniformly
+        // with top-level `launch_mode: tmux` agents from #504.
+        state.config.launch_mode = match lifecycle {
+            SubAgentLifecycle::StreamJson => {
+                crate::domain::config_types::ConfigLaunchMode::Subprocess
+            }
+            SubAgentLifecycle::TmuxChannel => crate::domain::config_types::ConfigLaunchMode::Tmux,
+        };
         crate::app::agent::save_state_pub(&state).ok();
     }
 
@@ -502,24 +565,60 @@ pub(crate) async fn call_add_persistent_agent(
         .await
         .with_context(|| format!("internal bus at {} is not reachable", bus_socket))?;
 
+    match lifecycle {
+        SubAgentLifecycle::StreamJson => {
+            spawn_stream_json_subagent(
+                &deskd_bin,
+                parent_name,
+                name,
+                &bus_socket,
+                &subscribe,
+                &child_env,
+                internal_bus,
+            )
+            .await
+        }
+        SubAgentLifecycle::TmuxChannel => {
+            spawn_tmux_channel_subagent(parent_name, name, &work_dir, &bus_socket, internal_bus)
+                .await
+        }
+    }
+}
+
+/// Stream-json sub-agent path — the historical behaviour.
+///
+/// Spawns `deskd agent run <name> --socket <bus> --subscribe …` as a
+/// background subprocess on the parent's internal bus. Each task runs
+/// `claude -p` to completion and exits; the bus connection comes back up on
+/// the next task.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_stream_json_subagent(
+    deskd_bin: &str,
+    parent_name: &str,
+    name: &str,
+    bus_socket: &str,
+    subscribe: &[String],
+    child_env: &HashMap<String, String>,
+    internal_bus: &Arc<Mutex<Option<InternalBus>>>,
+) -> Result<Value> {
     // Start the worker as a background process connected to the internal bus.
     let mut run_args = vec![
         "agent".to_string(),
         "run".to_string(),
         name.to_string(),
         "--socket".to_string(),
-        bus_socket.clone(),
+        bus_socket.to_string(),
     ];
-    for sub in &subscribe {
+    for sub in subscribe {
         run_args.push("--subscribe".to_string());
         run_args.push(sub.clone());
     }
-    let mut cmd = tokio::process::Command::new(&deskd_bin);
+    let mut cmd = tokio::process::Command::new(deskd_bin);
     cmd.args(&run_args)
-        .env("DESKD_BUS_SOCKET", &bus_socket)
+        .env("DESKD_BUS_SOCKET", bus_socket)
         .env("DESKD_AGENT_NAME", name);
     // Inject child-specific env vars (isolated from parent).
-    for (k, v) in &child_env {
+    for (k, v) in child_env {
         cmd.env(k, v);
     }
     let mut child = cmd
@@ -555,7 +654,7 @@ pub(crate) async fn call_add_persistent_agent(
     // Poll until the worker registers on the bus (up to 30s), so callers can
     // safely send_message immediately after this call returns.
     let agent_name_owned = name.to_string();
-    let bus_socket_poll = bus_socket.clone();
+    let bus_socket_poll = bus_socket.to_string();
     let poll_timeout = std::time::Duration::from_secs(30);
     let poll_interval = tokio::time::Duration::from_millis(200);
     let registered = tokio::time::timeout(poll_timeout, async {
@@ -586,6 +685,105 @@ pub(crate) async fn call_add_persistent_agent(
                 name, bus_socket, subscribe_display
             )
         }],
+        "isError": false
+    }))
+}
+
+/// Tmux-channel sub-agent path (#502).
+///
+/// 1. Provision the sub-agent's `work_dir` and the unix user's Claude home so
+///    an unattended `claude --dangerously-load-development-channels` starts
+///    without any first-run prompts (delegated to the #503 helper). The
+///    helper writes `{work_dir}/.mcp.json` registering
+///    `deskd mcp-channel --agent <name>` with
+///    `env.DESKD_BUS_SOCKET = <internal_bus_socket>` — so the REPL inside
+///    tmux talks to the parent's internal bus, never the parent's main bus.
+/// 2. Launch a detached `deskd-<name>` tmux session via the existing
+///    `launch_tmux_session` path (#452/#504). If the session is already up
+///    we adopt it (`ensure_tmux_launched` handles both branches).
+/// 3. Record `tmux_session` + `tmux_log_path` in the agent state file so
+///    `deskd agent list` shows the session and `agent stop` can kill it.
+/// 4. Register the sub-agent in the internal bus's tracker so the parent's
+///    `send_message` routes `agent:<name>` to this bus.
+///
+/// Note: the tmux session is detached and survives parent exit — that's the
+/// persistent-agent contract. `worker_handles` therefore stays empty here;
+/// cleanup is driven by `deskd agent stop <name>` which kills tmux.
+async fn spawn_tmux_channel_subagent(
+    parent_name: &str,
+    name: &str,
+    work_dir: &str,
+    bus_socket: &str,
+    internal_bus: &Arc<Mutex<Option<InternalBus>>>,
+) -> Result<Value> {
+    let work_dir_path = std::path::PathBuf::from(work_dir);
+    let bus_socket_path = std::path::PathBuf::from(bus_socket);
+
+    let outcome =
+        crate::app::agent_process::ensure_tmux_launched(name, &work_dir_path, &bus_socket_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to launch tmux-channel sub-agent '{}' for parent '{}'",
+                    name, parent_name
+                )
+            })?;
+
+    // Record tmux session info on the agent state (same convention as #504
+    // for top-level `launch_mode: tmux` agents — see `serve.rs`).
+    if let Ok(mut state) = crate::app::agent::load_state(name) {
+        state.tmux_session = Some(outcome.session_name.clone());
+        state.tmux_log_path = Some(outcome.log_path.display().to_string());
+        // Clear any stale subprocess pid — this agent has no foreground
+        // worker. `agent list` reads `tmux_session` + a live `tmux ls`
+        // lookup to render the LAUNCHER column.
+        state.pid = 0;
+        crate::app::agent::save_state_pub(&state).ok();
+    }
+
+    // Track in the internal bus so the parent's `send_message` routes
+    // `agent:<name>` here, not to the parent's main bus.
+    {
+        let mut ibus_guard = internal_bus.lock().await;
+        if let Some(ref mut ibus) = *ibus_guard {
+            ibus.sub_agents.insert(name.to_string());
+        }
+    }
+
+    info!(
+        parent = %parent_name,
+        agent = %name,
+        session = %outcome.session_name,
+        bus = %bus_socket,
+        log = %outcome.log_path.display(),
+        adopted = outcome.adopted,
+        "tmux-channel sub-agent launched on internal bus"
+    );
+
+    let msg = if outcome.adopted {
+        format!(
+            "Agent '{}' adopted existing tmux session '{}' on internal bus {} (log: {})",
+            name,
+            outcome.session_name,
+            bus_socket,
+            outcome.log_path.display()
+        )
+    } else {
+        format!(
+            "Agent '{}' launched in tmux session '{}' on internal bus {} (log: {})",
+            name,
+            outcome.session_name,
+            bus_socket,
+            outcome.log_path.display()
+        )
+    };
+
+    Ok(json!({
+        "content": [{ "type": "text", "text": msg }],
+        "lifecycle": SubAgentLifecycle::TmuxChannel.as_str(),
+        "session_name": outcome.session_name,
+        "log_path": outcome.log_path.display().to_string(),
+        "adopted": outcome.adopted,
         "isError": false
     }))
 }
@@ -2677,4 +2875,167 @@ agents:
     }
 
     use chrono::{Datelike, Timelike};
+
+    // ─── parse_lifecycle_arg tests (#502) ───────────────────────────────────
+    //
+    // Argument-level checks are the safe layer to assert: they run before
+    // any side-effecting work (spawning `deskd agent create`, binding the
+    // internal bus, writing `.mcp.json`). The deeper provisioning behaviour
+    // is exercised by the #503 helper's own tests + the #502 integration
+    // test (`add_persistent_agent_lifecycle.rs`).
+
+    #[test]
+    fn parse_lifecycle_default_is_stream_json() {
+        // No `lifecycle` key at all → backward-compat default.
+        let v = parse_lifecycle_arg(&json!({})).expect("default must parse");
+        assert_eq!(v, SubAgentLifecycle::StreamJson);
+        // Explicit null → still default.
+        let v = parse_lifecycle_arg(&json!({"lifecycle": null})).expect("null must parse");
+        assert_eq!(v, SubAgentLifecycle::StreamJson);
+    }
+
+    #[test]
+    fn parse_lifecycle_accepts_known_values() {
+        assert_eq!(
+            parse_lifecycle_arg(&json!({"lifecycle": "stream-json"})).unwrap(),
+            SubAgentLifecycle::StreamJson
+        );
+        assert_eq!(
+            parse_lifecycle_arg(&json!({"lifecycle": "tmux-channel"})).unwrap(),
+            SubAgentLifecycle::TmuxChannel
+        );
+    }
+
+    #[test]
+    fn parse_lifecycle_rejects_unknown_string() {
+        let err = parse_lifecycle_arg(&json!({"lifecycle": "subprocess"})).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("stream-json") && msg.contains("tmux-channel"),
+            "error must list both accepted values, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_lifecycle_rejects_non_string() {
+        let err = parse_lifecycle_arg(&json!({"lifecycle": 42})).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("must be a string"),
+            "expected type error, got: {}",
+            msg
+        );
+    }
+
+    // ─── work_dir containment (both lifecycles) ────────────────────────────
+    //
+    // Containment is enforced *before* we try to spawn a worker or launch a
+    // tmux session, so we can test it without `deskd` or `tmux` on PATH —
+    // the call must `bail!` from the containment check directly.
+
+    /// Helper: build args that point at a work_dir outside the parent's PWD
+    /// so containment must reject regardless of lifecycle.
+    fn outside_parent_args(name: &str, lifecycle: Option<&str>) -> serde_json::Value {
+        let mut args = json!({
+            "name": name,
+            "model": "claude-sonnet-4-6",
+            "system_prompt": "",
+            "subscribe": [format!("agent:{}", name)],
+            // /etc exists everywhere and is never inside our test PWD,
+            // making this a robust "outside parent" target.
+            "work_dir": "/etc",
+        });
+        if let Some(l) = lifecycle {
+            args["lifecycle"] = json!(l);
+        }
+        args
+    }
+
+    /// stream-json default: out-of-scope work_dir must fail containment.
+    #[tokio::test]
+    async fn add_persistent_agent_stream_json_enforces_work_dir_containment() {
+        let env_guard = crate::test_support::env_lock().lock().await;
+        let parent_pwd = std::env::temp_dir().join(format!("deskd-502-parent-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent_pwd).unwrap();
+        // SAFETY: env_lock serializes env-mutating tests workspace-wide.
+        unsafe { std::env::set_var("PWD", &parent_pwd) };
+
+        let internal_bus: Arc<Mutex<Option<InternalBus>>> = Arc::new(Mutex::new(None));
+        let err = call_add_persistent_agent(
+            &outside_parent_args(&format!("sj-{}", Uuid::new_v4()), None),
+            "parent-agent",
+            "/tmp/parent.sock",
+            &internal_bus,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("outside parent scope"),
+            "stream-json containment error expected, got: {}",
+            msg
+        );
+
+        let _ = std::fs::remove_dir_all(&parent_pwd);
+        drop(env_guard);
+    }
+
+    /// tmux-channel: same containment guard must reject out-of-scope work_dir.
+    /// Important to keep this — otherwise tmux-channel callers could escape
+    /// the parent's scope and provision an .mcp.json wherever they liked.
+    #[tokio::test]
+    async fn add_persistent_agent_tmux_channel_enforces_work_dir_containment() {
+        let env_guard = crate::test_support::env_lock().lock().await;
+        let parent_pwd = std::env::temp_dir().join(format!("deskd-502-parent-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent_pwd).unwrap();
+        // SAFETY: env_lock serializes env-mutating tests workspace-wide.
+        unsafe { std::env::set_var("PWD", &parent_pwd) };
+
+        let internal_bus: Arc<Mutex<Option<InternalBus>>> = Arc::new(Mutex::new(None));
+        let err = call_add_persistent_agent(
+            &outside_parent_args(&format!("tc-{}", Uuid::new_v4()), Some("tmux-channel")),
+            "parent-agent",
+            "/tmp/parent.sock",
+            &internal_bus,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("outside parent scope"),
+            "tmux-channel containment error expected, got: {}",
+            msg
+        );
+
+        let _ = std::fs::remove_dir_all(&parent_pwd);
+        drop(env_guard);
+    }
+
+    /// Bad lifecycle string must reject before any side effects fire — so a
+    /// caller typo cannot accidentally provision anything.
+    #[tokio::test]
+    async fn add_persistent_agent_rejects_unknown_lifecycle_early() {
+        let internal_bus: Arc<Mutex<Option<InternalBus>>> = Arc::new(Mutex::new(None));
+        let err = call_add_persistent_agent(
+            &json!({
+                "name": format!("bad-{}", Uuid::new_v4()),
+                "model": "claude-sonnet-4-6",
+                "system_prompt": "",
+                "subscribe": ["agent:bad"],
+                "lifecycle": "subprocess",
+            }),
+            "parent-agent",
+            "/tmp/parent.sock",
+            &internal_bus,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("stream-json") && msg.contains("tmux-channel"),
+            "lifecycle rejection must list both valid values, got: {}",
+            msg
+        );
+    }
 }
