@@ -6,8 +6,10 @@
 //! agent runtime — opt-in via `--tmux` flag on `deskd agent start` or
 //! `launch_mode: tmux` in per-agent yaml.
 //!
-//! The session runs `claude --dangerously-load-development-channels
-//! server:deskd` so it receives MCP channel events from deskd (#451).
+//! The session runs `claude --dangerously-skip-permissions
+//! --dangerously-load-development-channels server:deskd` so it receives MCP
+//! channel events from deskd (#451) without blocking on the Bypass-Permissions
+//! mode-acceptance consent prompt (#510).
 //!
 //! Logs are captured via `tmux pipe-pane` to `/var/log/deskd/sessions/<agent>.log`
 //! (or `~/.local/state/deskd/sessions/<agent>.log` when the system path is not
@@ -174,9 +176,9 @@ pub fn tmux_session_exists(name: &str) -> Result<bool> {
 
 /// Launch a detached tmux session running the agent's Claude REPL.
 ///
-/// The session runs `claude --dangerously-load-development-channels server:deskd`
-/// in the agent's home directory. Output is mirrored to a log file via
-/// `tmux pipe-pane`.
+/// The session runs `claude --dangerously-skip-permissions
+/// --dangerously-load-development-channels server:deskd` in the agent's home
+/// directory. Output is mirrored to a log file via `tmux pipe-pane`.
 ///
 /// Returns an `Err` if a session named `deskd-<agent>` already exists; the
 /// caller should print the user-facing "attach with `tmux attach -t ...`" hint.
@@ -196,7 +198,7 @@ pub fn launch_tmux_session(target: &LaunchTarget<'_>, log_dir: &Path) -> Result<
     let log_path = log_dir.join(format!("{}.log", target.name));
 
     // Build the command tmux will execute inside the session.
-    let claude_cmd = "claude --dangerously-load-development-channels server:deskd";
+    let claude_cmd = "claude --dangerously-skip-permissions --dangerously-load-development-channels server:deskd";
 
     // tmux new-session -d -s <name> -c <home_dir> '<cmd>'
     let new_session_status = Command::new("tmux")
