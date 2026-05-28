@@ -490,6 +490,12 @@ pub enum AgentAction {
         /// reports that no launcher is configured.
         #[arg(long, default_value = "false")]
         tmux: bool,
+        /// Also install a systemd-user unit at
+        /// `~/.config/systemd/user/deskd-<name>.service` and run
+        /// `systemctl --user daemon-reload && enable` so the session is
+        /// restarted on crash and survives reboot. Requires `--tmux`. #505
+        #[arg(long, default_value = "false")]
+        persistent: bool,
         /// Path to the agent's deskd.yaml (only consulted to read
         /// `launch_mode:`). Defaults to `~/<name>/deskd.yaml` or the running
         /// serve state.
@@ -513,6 +519,11 @@ pub enum AgentAction {
         /// Path to the agent's deskd.yaml (consulted for `launch_mode:`).
         #[arg(long)]
         config: Option<String>,
+        /// Also remove `~/.config/systemd/user/deskd-<name>.service`, run
+        /// `systemctl --user disable`, and `daemon-reload`. Idempotent — if
+        /// the unit was never installed this is a no-op. #505
+        #[arg(long, default_value = "false")]
+        uninstall_unit: bool,
     },
     /// Manage tmux REPL sessions for agents (#452).
     Session {

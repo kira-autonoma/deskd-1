@@ -220,6 +220,11 @@ fn print_detailed(name: &str, last: usize, thresholds: &DoctorThresholds) -> Res
         println!("Recommend: {}", action);
     }
 
+    // Tmux session + systemd-user unit + linger summary (#505). Cheap probes
+    // so we always print this section; missing systemd is conveyed as
+    // `unit missing` / `(unit missing)`.
+    print_tmux_unit_section(name);
+
     // Surface threshold transparency for the operator.
     println!();
     println!(
@@ -230,4 +235,63 @@ fn print_detailed(name: &str, last: usize, thresholds: &DoctorThresholds) -> Res
         DEFAULT_EMPTY_COMPLETION_THRESHOLD
     );
     Ok(())
+}
+
+/// Print the tmux/unit/linger status table for `agent` (#505).
+///
+/// Probes are best-effort and never error: if `tmux`, `systemctl --user`, or
+/// `loginctl` is missing or fails, the relevant row falls back to a benign
+/// placeholder rather than aborting the doctor command.
+fn print_tmux_unit_section(agent: &str) {
+    use crate::app::tmux_launcher::{
+        current_user_linger, session_name_for, systemd_unit_install_path, systemd_unit_is_enabled,
+        tmux_session_exists,
+    };
+
+    let session = session_name_for(agent);
+    let session_alive = tmux_session_exists(&session).unwrap_or(false);
+    let unit_path = systemd_unit_install_path(agent).ok();
+    let unit_exists = unit_path.as_ref().is_some_and(|p| p.exists());
+
+    println!();
+    println!("agent: {}", agent);
+    println!(
+        "tmux session     : {}",
+        if session_alive {
+            "alive"
+        } else {
+            "not running"
+        }
+    );
+    let unit_path_display = unit_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| format!("~/.config/systemd/user/deskd-{}.service", agent));
+    println!(
+        "unit file        : {} [{}]",
+        unit_path_display,
+        if unit_exists { "exists" } else { "missing" }
+    );
+    let enabled_str = if !unit_exists {
+        "(unit missing)".to_string()
+    } else if systemd_unit_is_enabled(agent) {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    };
+    println!("unit enabled     : {}", enabled_str);
+
+    let linger = current_user_linger();
+    let linger_str = match linger {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
+    println!("linger           : {}", linger_str);
+
+    if linger == Some(false) && unit_exists {
+        println!(
+            "Note: linger is disabled. Run `sudo loginctl enable-linger $(whoami)` to enable persistent user services."
+        );
+    }
 }

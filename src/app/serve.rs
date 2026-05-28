@@ -173,6 +173,47 @@ pub async fn serve_with_options(config_path: String, include_tmux: bool) -> Resu
                         adopted = outcome.adopted,
                         "tmux launch path active — worker loop skipped"
                     );
+
+                    // Persistent-unit install path (#505). When the per-agent
+                    // deskd.yaml sets `tmux_persistent: true`, install a
+                    // systemd-user unit that supervises the tmux session
+                    // (restart on crash, survive reboot). Failure here is a
+                    // diag warning, not a fatal error — serve continues so
+                    // the running tmux session is still usable.
+                    if user_cfg
+                        .as_ref()
+                        .map(|c| c.tmux_persistent)
+                        .unwrap_or(false)
+                    {
+                        let binary = std::env::current_exe()
+                            .and_then(|p| p.canonicalize())
+                            .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/deskd"));
+                        match crate::app::tmux_launcher::install_systemd_unit(&name, &binary) {
+                            Ok(path) => {
+                                info!(
+                                    agent = %name,
+                                    unit = %path.display(),
+                                    "installed systemd-user unit for persistent tmux session"
+                                );
+                                if crate::app::tmux_launcher::current_user_linger() == Some(false) {
+                                    warn!(
+                                        agent = %name,
+                                        "linger is disabled — persistent unit will not survive logout. \
+                                         Enable with `sudo loginctl enable-linger $(whoami)`."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                diag::warn_event(
+                                    Some(&bus_socket),
+                                    "supervisor",
+                                    "tmux.persistent_install_failed",
+                                    format!("systemd-user unit install failed: {}", e),
+                                    serde_json::json!({ "agent": name }),
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     diag::error_event(

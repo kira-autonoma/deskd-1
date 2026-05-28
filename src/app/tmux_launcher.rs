@@ -388,6 +388,112 @@ pub fn systemd_unit_install_path(agent: &str) -> Result<PathBuf> {
         .join(format!("deskd-{}.service", agent)))
 }
 
+/// Install the systemd-user unit for `agent`: writes the unit file, runs
+/// `systemctl --user daemon-reload`, then `systemctl --user enable`.
+///
+/// Does NOT call `systemctl --user start` — the caller is expected to have
+/// already launched the tmux session itself; the unit governs restart-on-crash
+/// and reboot recovery.
+pub fn install_systemd_unit(agent: &str, binary_path: &Path) -> Result<PathBuf> {
+    let unit_content = render_systemd_unit(agent, binary_path);
+    let path = systemd_unit_install_path(agent)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create systemd user dir {}", parent.display()))?;
+    }
+    std::fs::write(&path, &unit_content)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+
+    run_systemctl_user(&["daemon-reload"])?;
+    run_systemctl_user(&["enable", &format!("deskd-{}.service", agent)])?;
+    Ok(path)
+}
+
+/// Uninstall the systemd-user unit for `agent`: idempotent file removal, then
+/// best-effort `systemctl --user disable` (tolerated on error — the unit may
+/// never have been enabled), then `systemctl --user daemon-reload`.
+pub fn uninstall_systemd_unit(agent: &str) -> Result<bool> {
+    let path = systemd_unit_install_path(agent)?;
+    let existed = path.exists();
+    if existed {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    // Disable is best-effort — failure is fine (e.g. unit was never enabled).
+    let _ = Command::new("systemctl")
+        .args(["--user", "disable", &format!("deskd-{}.service", agent)])
+        .output();
+    run_systemctl_user(&["daemon-reload"])?;
+    Ok(existed)
+}
+
+/// Return whether the systemd-user unit for `agent` is currently enabled.
+///
+/// Runs `systemctl --user is-enabled deskd-<agent>.service` and treats exit
+/// code 0 as "enabled". Any other outcome (including "not found") returns
+/// false.
+pub fn systemd_unit_is_enabled(agent: &str) -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-enabled", &format!("deskd-{}.service", agent)])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run `systemctl --user <args>` and surface stderr on non-zero exit.
+fn run_systemctl_user(args: &[&str]) -> Result<()> {
+    let out = Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to invoke `systemctl --user {}`", args.join(" ")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!(
+            "`systemctl --user {}` exited {:?}: {}",
+            args.join(" "),
+            out.status.code(),
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+/// Parse the output of `loginctl show-user <user> --property=Linger` into a
+/// boolean. Returns `None` when the output cannot be interpreted (missing
+/// property, malformed string, etc.) so callers can distinguish "no" from
+/// "could not determine".
+pub fn parse_linger(loginctl_output: &str) -> Option<bool> {
+    for line in loginctl_output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Linger=") {
+            return match rest.trim() {
+                "yes" => Some(true),
+                "no" => Some(false),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// Probe `loginctl show-user $user --property=Linger` for the current user.
+///
+/// Returns `Some(true|false)` when `loginctl` is available and the property
+/// parses; `None` when the binary is missing, exits non-zero, or the output
+/// cannot be parsed (e.g. running inside a CI container without systemd).
+pub fn current_user_linger() -> Option<bool> {
+    let user = std::env::var("USER").ok()?;
+    let out = Command::new("loginctl")
+        .args(["show-user", &user, "--property=Linger"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_linger(&String::from_utf8_lossy(&out.stdout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +643,36 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_linger_yes() {
+        assert_eq!(parse_linger("Linger=yes\n"), Some(true));
+    }
+
+    #[test]
+    fn parse_linger_no() {
+        assert_eq!(parse_linger("Linger=no\n"), Some(false));
+    }
+
+    #[test]
+    fn parse_linger_empty_input() {
+        assert_eq!(parse_linger(""), None);
+    }
+
+    #[test]
+    fn parse_linger_unexpected_value() {
+        // `loginctl` should never emit this, but if the format ever changes
+        // we shouldn't lie about the state.
+        assert_eq!(parse_linger("Linger=maybe\n"), None);
+    }
+
+    #[test]
+    fn parse_linger_handles_extra_properties() {
+        // `loginctl show-user` can print multiple properties; we should pick
+        // out `Linger=` regardless of where it appears.
+        let out = "Name=alice\nLinger=yes\nIdleHint=no\n";
+        assert_eq!(parse_linger(out), Some(true));
     }
 
     #[test]

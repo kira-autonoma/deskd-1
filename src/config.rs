@@ -836,6 +836,14 @@ pub struct UserConfig {
     /// detached tmux session named `deskd-<agent>`.
     #[serde(default)]
     pub launch_mode: ConfigLaunchMode,
+    /// When `true` together with `launch_mode: tmux`, install a systemd-user
+    /// unit so the tmux session is restarted on crash and survives reboot
+    /// (#505). Consumed by `deskd serve`'s tmux-launch path (after
+    /// `ensure_tmux_launched` returns Ok) to call
+    /// [`crate::app::tmux_launcher::install_systemd_unit`]. Manual install is
+    /// available via `deskd agent start <name> --tmux --persistent`.
+    #[serde(default)]
+    pub tmux_persistent: bool,
     /// Cross-user bus routing: maps `agent:<name>` targets to a foreign unix
     /// socket path so `send_message` can reach a top-level agent owned by a
     /// different unix user. Each value is a path to that agent's bus socket

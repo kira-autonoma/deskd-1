@@ -609,13 +609,24 @@ pub async fn handle(action: AgentAction) -> Result<()> {
         AgentAction::Start {
             name,
             tmux,
+            persistent,
             config,
             log_dir,
         } => {
-            handle_start(&name, tmux, config.as_deref(), log_dir.as_deref())?;
+            handle_start(
+                &name,
+                tmux,
+                persistent,
+                config.as_deref(),
+                log_dir.as_deref(),
+            )?;
         }
-        AgentAction::Stop { name, config } => {
-            handle_stop(&name, config.as_deref())?;
+        AgentAction::Stop {
+            name,
+            config,
+            uninstall_unit,
+        } => {
+            handle_stop(&name, config.as_deref(), uninstall_unit)?;
         }
         AgentAction::Session { action } => {
             handle_session(action)?;
@@ -785,11 +796,13 @@ fn resolve_agent_home(name: &str) -> Option<std::path::PathBuf> {
 fn handle_start(
     name: &str,
     tmux_flag: bool,
+    persistent: bool,
     config_arg: Option<&str>,
     log_dir_arg: Option<&str>,
 ) -> Result<()> {
     use crate::app::tmux_launcher::{
-        LaunchTarget, check_tmux_runtime_prereqs, launch_tmux_session, resolve_log_dir,
+        LaunchTarget, check_tmux_runtime_prereqs, current_user_linger, install_systemd_unit,
+        launch_tmux_session, resolve_log_dir,
     };
     use crate::domain::config_types::ConfigLaunchMode;
 
@@ -805,6 +818,12 @@ fn handle_start(
             "no launcher configured for agent `{}` — pass `--tmux` or set `launch_mode: tmux` in the agent's deskd.yaml. Subprocess agents are supervised by `deskd serve`.",
             name
         );
+    }
+
+    if persistent && !use_tmux {
+        // Defensive: clap already requires --tmux for --persistent semantically,
+        // but the flag is independent so guard the combination here too.
+        anyhow::bail!("--persistent requires --tmux (the persistent unit governs a tmux session)");
     }
 
     let home_dir = resolve_agent_home(name).ok_or_else(|| {
@@ -833,6 +852,23 @@ fn handle_start(
         session.log_path.display()
     );
     println!("attach with: tmux attach -t {}", session.session_name);
+
+    if persistent {
+        // Canonicalise the binary so the unit refers to a stable absolute path
+        // (avoids worktree symlinks pointing the unit at a transient location).
+        let binary = std::env::current_exe()
+            .and_then(|p| p.canonicalize())
+            .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/deskd"));
+        let path = install_systemd_unit(name, &binary)?;
+        println!("persistent unit installed: deskd-{}.service", name);
+        println!("  path: {}", path.display());
+        if current_user_linger() == Some(false) {
+            println!(
+                "Note: linger is disabled. Run `sudo loginctl enable-linger $(whoami)` to enable persistent user services."
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -842,8 +878,11 @@ fn handle_start(
 /// agents are not touched here — operators continue to use `deskd serve` /
 /// `deskd agent restart` for those (the issue is explicit that subprocess
 /// behaviour stays unchanged).
-fn handle_stop(name: &str, config_arg: Option<&str>) -> Result<()> {
-    use crate::app::tmux_launcher::{kill_tmux_session, session_name_for, tmux_session_exists};
+fn handle_stop(name: &str, config_arg: Option<&str>, uninstall_unit: bool) -> Result<()> {
+    use crate::app::tmux_launcher::{
+        kill_tmux_session, session_name_for, systemd_unit_install_path, tmux_session_exists,
+        uninstall_systemd_unit,
+    };
 
     let session = session_name_for(name);
     let yaml_mode = resolve_agent_yaml(name, config_arg)
@@ -853,6 +892,21 @@ fn handle_stop(name: &str, config_arg: Option<&str>) -> Result<()> {
     let session_alive = tmux_session_exists(&session).unwrap_or(false);
 
     if !session_alive && yaml_mode != crate::domain::config_types::ConfigLaunchMode::Tmux {
+        // Even when there's no tmux session, the operator may still want to
+        // tear down a leftover unit file. Honor --uninstall-unit in that case;
+        // otherwise preserve the original no-action behavior.
+        if uninstall_unit {
+            let removed = uninstall_systemd_unit(name)?;
+            if removed {
+                println!("removed systemd user unit: deskd-{}.service", name);
+            } else {
+                println!(
+                    "no systemd user unit installed for `{}` — nothing to remove",
+                    name
+                );
+            }
+            return Ok(());
+        }
         println!(
             "no tmux session `{}` is running; agent `{}` is not configured for tmux launch — no action",
             session, name
@@ -862,6 +916,26 @@ fn handle_stop(name: &str, config_arg: Option<&str>) -> Result<()> {
 
     kill_tmux_session(name)?;
     println!("stopped tmux session `{}`", session);
+
+    if uninstall_unit {
+        let removed = uninstall_systemd_unit(name)?;
+        if removed {
+            println!("removed systemd user unit: deskd-{}.service", name);
+        } else {
+            println!(
+                "no systemd user unit installed for `{}` — nothing to remove",
+                name
+            );
+        }
+    } else if let Ok(path) = systemd_unit_install_path(name)
+        && path.exists()
+    {
+        println!(
+            "tmux session stopped; persistent unit deskd-{}.service is still enabled. \
+             Disable with `systemctl --user disable deskd-{}.service` if you want it gone.",
+            name, name
+        );
+    }
     Ok(())
 }
 
